@@ -10,7 +10,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .api import router as api_router
+from .api import compat_router, router as api_router
+from .auth import authenticate, extract_token
 from .config import settings
 from .db import SessionLocal, init_db
 from .errors import ApiError
@@ -48,6 +49,25 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(compat_router, prefix="/v1")
+
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    """AH_AUTH_REQUIRED=true 时校验对外接口凭证（SSE 可用 ?access_token= 传递）。"""
+    if settings.auth_required and request.method != "OPTIONS":
+        path = request.url.path
+        if path.startswith("/api/v1") or path.startswith("/v1/"):
+            db = SessionLocal()
+            try:
+                authenticate(db, extract_token(request))
+            except ApiError as exc:
+                return JSONResponse(status_code=exc.status_code,
+                                    content={"code": exc.code, "message": exc.message,
+                                             "retryable": exc.retryable})
+            finally:
+                db.close()
+    return await call_next(request)
 
 
 @app.exception_handler(ApiError)

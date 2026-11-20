@@ -55,6 +55,52 @@ GET  /api/v1/runs/{id}/events  →  SSE 实时事件
 - 执行优先走 LangGraph，编译或执行异常时降级为按拓扑序顺序执行
 - 高风险客户（司法命中被执行/失信）在 hitl 节点中断，状态置 `WAITING_APPROVAL`，审批后从 Checkpoint 恢复
 
+## 对外调用（业务系统嵌入）
+
+平台是中台，业务侧不需要了解内部 DAG，两种方式二选一。
+
+### 1. 原生调用
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/invoke/ag_001 \
+  -H "Authorization: Bearer ah_pat_demo_local_dev" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_no":"C-2026-0031","mode":"sync",
+       "payload":{"credit":{"total_limit":8000000,"used_limit":6200000,"overdue_30d":1}}}'
+```
+
+- `mode=sync`：直接返回 `summary` / `features` / `report_url`
+- `mode=async`：立即返回 `run_id`，用 `links.events`（SSE）或 `links.self`（轮询）取结果
+- `credit` / `finance` / `judicial` 也可平铺在请求体顶层
+
+### 2. OpenAI 兼容
+
+已有 OpenAI SDK 的业务侧只改 `base_url`，`model` 填智能体 id：
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="ah_pat_demo_local_dev")
+resp = client.chat.completions.create(model="ag_001", messages=[{"role": "user", "content": payload_json}])
+print(resp.choices[0].message.content)
+```
+
+兼容端点：`POST /v1/chat/completions`（支持 `stream=true`）、`GET /v1/models`。
+
+### 辅助端点
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /api/v1/invoke/agents` | 可被外部调用的智能体清单 |
+| `GET /api/v1/invoke/{agent}/info` | 接入信息（端点、字段、最近调用） |
+
+### 鉴权
+
+- 请求头 `Authorization: Bearer <AppKey>`，也支持 `X-API-Key`、`?access_token=`（SSE 用）
+- 本地演示凭证：`ah_pat_demo_local_dev`（服务端只存 sha256 摘要）
+- `AH_AUTH_REQUIRED=true` 时对 `/api/v1` 与 `/v1` 强制校验，未开启时允许匿名调用并记录调用方
+
+控制台「接入与凭证 → 对外调用」页可直接复制 curl / Python / Node 片段并在线试调用。
+
 ## 配置
 
 环境变量或 `.env`（前缀 `AH_`）：

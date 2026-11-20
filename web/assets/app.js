@@ -12,7 +12,8 @@ const NAV = [
   { id: "kb", name: "知识库", ico: "KB", group: "能力资产", tabs: [["docs", "文档与切片"], ["test", "检索测试"]] },
   { id: "models", name: "模型接入", ico: "MD", group: "能力资产", tabs: [["list", "Provider 与别名"], ["routing", "降级链"]] },
   { id: "observe", name: "运行监控", ico: "OB", group: "运行与接入", tabs: [["traces", "Trace"], ["stats", "统计"]] },
-  { id: "access", name: "接入与凭证", ico: "AP", group: "运行与接入", tabs: [["keys", "AppKey"], ["contract", "接口契约"]] },
+  { id: "access", name: "接入与凭证", ico: "AP", group: "运行与接入", tabs: [
+    ["keys", "AppKey"], ["invoke", "对外调用"], ["contract", "接口契约"]] },
 ];
 
 /* ===== 运行时状态 ===== */
@@ -60,6 +61,7 @@ function topbarHTML(nav, sub) {
   return '<div class="crumb"><b>AgentHub</b><span>/</span><b>' + esc(nav.name) + "</b>" +
     (subName ? "<span>/</span>" + esc(subName) : "") + "</div>" +
     '<div class="topright">' +
+    '<button class="btn sm" data-act="key.setting">设置 Key</button>' +
     '<a class="btn sm" href="/docs" target="_blank">API 文档</a>' +
     '<a class="btn sm" href="/reports/" target="_blank">报告目录</a>' +
     '<span class="tag ok">后端在线</span></div>';

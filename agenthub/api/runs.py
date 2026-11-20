@@ -66,8 +66,11 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/runs/{run_id}/events")
-async def stream_events(run_id: str, request_offset: int = 0):
+async def stream_events(run_id: str, request_offset: int = 0, db: Session = Depends(get_db)):
     """SSE 事件流；支持从指定 seq 之后继续（等价 Last-Event-ID）。"""
+    run = db.get(Run, run_id)
+    if not run:
+        raise NotFound(f"运行不存在：{run_id}")
 
     async def gen():
         last = max(0, request_offset)

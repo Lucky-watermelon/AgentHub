@@ -346,7 +346,9 @@ function subscribe(runId) {
   if (!box) return;
   box.innerHTML = "";
   if (window.__es) { try { window.__es.close(); } catch (e) {} }
-  const es = new EventSource(API_BASE + "/runs/" + runId + "/events");
+  const token = apiKey();
+  const sseUrl = API_BASE + "/runs/" + runId + "/events" + (token ? "?access_token=" + encodeURIComponent(token) : "");
+  const es = new EventSource(sseUrl);
   window.__es = es;
   const append = (name, data) => {
     const line = document.createElement("div");

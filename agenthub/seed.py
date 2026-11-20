@@ -142,8 +142,15 @@ def seed_all(db: Session) -> None:
             db.flush()
             index_document(db, doc)
 
-    if db.query(AppKey).count() == 0:
-        db.add(AppKey(id="ak_demo", app="本地调试", type="PAT", prefix="ah_pat_demo…",
-                      digest="", status="启用", expires_at="2027-12-31"))
+    # 本地调试凭证：明文固定为 DEMO_KEY，便于业务侧直接联调（仅本地演示使用）
+    from .auth import DEMO_KEY, digest as _digest
+
+    demo = db.query(AppKey).filter(AppKey.id == "ak_demo").first()
+    if not demo:
+        db.add(AppKey(id="ak_demo", app="本地调试", type="PAT", prefix=DEMO_KEY[:14] + "…",
+                      digest=_digest(DEMO_KEY), status="启用", expires_at="2027-12-31"))
+    elif not demo.digest:
+        demo.digest = _digest(DEMO_KEY)
+        demo.prefix = DEMO_KEY[:14] + "…"
 
     db.commit()

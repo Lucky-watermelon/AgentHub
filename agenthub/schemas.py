@@ -118,6 +118,32 @@ class RunCreate(BaseModel):
     async_mode: bool = False
 
 
+class InvokeRequest(BaseModel):
+    """对外调用入参：报文可直接放在 payload，也允许扁平传入 credit/finance/judicial。"""
+
+    customer_no: str = ""
+    payload: dict[str, Any] = {}
+    mode: str = "sync"  # sync / async
+    credit: dict[str, Any] | None = None
+    finance: dict[str, Any] | None = None
+    judicial: dict[str, Any] | None = None
+
+
+class CompatMessage(BaseModel):
+    role: str = "user"
+    content: str = ""
+
+
+class CompatChatRequest(BaseModel):
+    """OpenAI 兼容调用体：model 填智能体 id 或名称。"""
+
+    model: str
+    messages: list[CompatMessage] = []
+    stream: bool = False
+    temperature: float | None = None
+    user: str | None = None
+
+
 class ApproveRequest(BaseModel):
     decision: str = "APPROVED"  # APPROVED / REJECTED
     comment: str = ""

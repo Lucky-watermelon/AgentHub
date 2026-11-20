@@ -10,8 +10,12 @@ const money = v => (v == null ? "—" : Number(v).toLocaleString("zh-CN", { maxi
 /* ===== API ===== */
 const API_BASE = "/api/v1";
 
+function apiKey() { try { return localStorage.getItem("ah_key") || ""; } catch (e) { return ""; } }
+
 async function api(path, options = {}) {
   const opts = { headers: { "Content-Type": "application/json" }, ...options };
+  const key = apiKey();
+  if (key) opts.headers = { ...opts.headers, Authorization: "Bearer " + key };
   if (opts.body && typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
   const resp = await fetch(API_BASE + path, opts);
   const text = await resp.text();
