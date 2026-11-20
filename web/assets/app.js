@@ -3,6 +3,9 @@
 const PAGES = window.PAGES || {};
 const ACTIONS = window.ACTIONS || {};
 
+/* 弹窗通用动作：取消 / × / 点击遮罩关闭 */
+ACTIONS["modal.close"] = () => closeModal();
+
 /* ===== 导航信息架构 ===== */
 const NAV = [
   { id: "agents", name: "智能体", ico: "AG", group: "能力资产", tabs: [
