@@ -119,12 +119,14 @@ def invoke(agent_id: str, body: InvokeRequest, request: Request,
 
     async_mode = str(body.mode).lower() == "async"
     started = time.perf_counter()
+    idem = (body.idempotency_key or request.headers.get("idempotency-key") or "").strip()
     run = runner_mod.create_run(db, agent, payload,
                                body.customer_no or payload.get("customer_no", ""),
-                               async_mode=async_mode)
+                               async_mode=async_mode, idempotency_key=idem)
     emit(db, run.id, "api.invoked", {"caller": key_label(key),
                                      "endpoint": f"/api/v1/invoke/{agent.id}",
-                                     "mode": "async" if async_mode else "sync"})
+                                     "mode": "async" if async_mode else "sync",
+                                     "idempotency_key": idem})
 
     data = run_out(run)
     result = {
@@ -139,6 +141,8 @@ def invoke(agent_id: str, body: InvokeRequest, request: Request,
                   "trace_id": run.trace_id},
         "links": _run_links(request, run),
         "caller": key_label(key),
+        "idempotency_key": run.idempotency_key,
+        "idempotent_reuse": bool(getattr(run, "_idempotent_hit", False)),
         "elapsed_ms": int((time.perf_counter() - started) * 1000),
     }
     if async_mode:

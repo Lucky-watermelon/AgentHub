@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     # 运行
     run_timeout_s: int = 300
+    run_workers: int = 4          # 执行器 worker 数
+    run_queue_size: int = 32      # 排队上限，超出返回 AH-RUNTIME-429
     seed_demo: bool = True
 
     # Langfuse 旁路（可选）：关闭时零开销，不影响主链路

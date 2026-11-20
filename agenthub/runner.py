@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 import uuid as _uuid
 from datetime import datetime
@@ -87,12 +86,28 @@ def _prompt_for(node: dict, state: dict) -> str:
     )
 
 
-def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False):
+def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False,
+                     skip_ids: set[str] | None = None,
+                     completed: set[str] | None = None):
+    skipped = skip_ids or set()
+
     def runner(node: dict, state: dict) -> dict:
         nid = node.get("id") or ""
         ntype = node.get("type") or "tool"
         name = node.get("name") or nid
+
+        def finish(payload: dict) -> dict:
+            if completed is not None:
+                completed.add(nid)
+            return payload
+
+        if nid in skipped:  # 断点续跑：中断前已完成的节点不再重复执行
+            emit(db, run.id, "node.skipped", {"node_id": nid, "node": name,
+                                              "reason": "已在中断前完成"})
+            return {}
+
         stats["step"] += 1
+        stats["current_node"] = nid
         node_started = time.perf_counter()
         emit(db, run.id, "node.start", {"node_id": nid, "node_type": ntype,
                                         "node": name, "step": stats["step"]})
@@ -103,7 +118,7 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
             emit(db, run.id, "node.result", {"node": nid, "matched": kinds,
                                             "branches": len(node.get("branches") or []),
                                             "dur_ms": int((time.perf_counter() - node_started) * 1000)})
-            return {}
+            return finish({})
 
         if ntype == "tool":
             tool_name = node.get("tool") or name
@@ -131,7 +146,7 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                 out["features"] = merged
             emit(db, run.id, "node.result", {"node": nid,
                                              "dur_ms": int((time.perf_counter() - node_started) * 1000)})
-            return out
+            return finish(out)
 
         if ntype == "llm":
             alias = node.get("model") or settings.default_model
@@ -146,8 +161,8 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                                                "alias": res.get("alias"), "dur_ms": dur,
                                                "degraded": res.get("degraded", False)})
             emit(db, run.id, "node.result", {"node": nid, "dur_ms": dur})
-            return {"messages": (state.get("messages") or []) + [res["text"]],
-                    "summary": res["text"]}
+            return finish({"messages": (state.get("messages") or []) + [res["text"]],
+                           "summary": res["text"]})
 
         if ntype == "hitl":
             level = ((state.get("features") or {}).get("judicial") or {}).get("level", "低")
@@ -156,10 +171,10 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
             emit(db, run.id, "node.result", {"node": nid, "decision": "SKIP",
                                             "reason": f"风险等级 {level}",
                                             "dur_ms": int((time.perf_counter() - node_started) * 1000)})
-            return {}
+            return finish({})
 
         emit(db, run.id, "node.result", {"node": nid, "skipped": True})
-        return {}
+        return finish({})
 
     return runner
 
@@ -175,9 +190,16 @@ def _sequential(dag: dict, state: dict, runner) -> dict:
 
 
 # ---------------- 运行主流程 ----------------
-def execute_run(run_id: str, skip_hitl: bool = False) -> None:
+def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> None:
+    """执行一次运行。
+
+    ``resume=True`` 时从上次 HITL 中断处继续：恢复 state 快照，并跳过已完成节点，
+    避免工具调用被重复执行。
+    """
     db = SessionLocal()
     started = time.perf_counter()
+    state: dict = {}
+    completed: set[str] = set()
     try:
         run = db.get(Run, run_id)
         if not run:
@@ -190,24 +212,45 @@ def execute_run(run_id: str, skip_hitl: bool = False) -> None:
             return
 
         payload = json.loads(run.input_json or "{}")
-        stats = {"tokens": 0, "step": 0}
+        stats = {"tokens": 0, "step": 0, "current_node": ""}
         state = {"customer_no": run.customer_no, "payload": payload, "features": {},
                  "messages": [], "report_html": "", "summary": "", "outputs": {}}
+
+        if resume:
+            try:
+                saved = json.loads(run.state_json or "{}")
+            except json.JSONDecodeError:
+                saved = {}
+            try:
+                progress = json.loads(run.node_progress or "{}")
+            except json.JSONDecodeError:
+                progress = {}
+            completed = set(progress.get("completed") or [])
+            if isinstance(saved, dict) and saved:
+                state.update(saved)
+            state["payload"] = payload or state.get("payload") or {}
+            state["customer_no"] = run.customer_no or state.get("customer_no") or ""
 
         run.status = "RUNNING"
         run.trace_id = run.trace_id or uid("tr")
         db.commit()
-        emit(db, run.id, "run.started", {"run_id": run.id, "agent": agent.name,
-                                         "agent_version": run.agent_version,
-                                         "thread_id": run.thread_id,
-                                         "customer_no": run.customer_no})
+        emit(db, run.id, "run.resumed" if resume else "run.started",
+             {"run_id": run.id, "agent": agent.name,
+              "agent_version": run.agent_version,
+              "thread_id": run.thread_id,
+              "customer_no": run.customer_no,
+              "resumed_from": sorted(completed)})
 
         dag_raw = json.loads(agent.dag_json or "{}")
         dag, errors, warnings = validate(dag_raw)
         if errors:
             raise DagInvalid(errors)
 
-        runner = make_node_runner(db, run, stats, skip_hitl=skip_hitl)
+        skip_ids = set(completed)
+        if skip_hitl:  # 审批已通过：审批节点本身不再执行
+            skip_ids |= {n["id"] for n in dag["nodes"] if n.get("type") == "hitl"}
+        runner = make_node_runner(db, run, stats, skip_hitl=skip_hitl,
+                                  skip_ids=skip_ids, completed=completed)
         result: dict
         try:
             graph = compile_graph(dag, runner)
@@ -234,6 +277,8 @@ def execute_run(run_id: str, skip_hitl: bool = False) -> None:
         run.amount = round(stats["tokens"] * 0.000012, 6)
         run.dur_ms = int((time.perf_counter() - started) * 1000)
         run.finished_at = datetime.now()
+        run.state_json = ""
+        run.node_progress = ""
         db.commit()
         emit(db, run.id, "run.completed", {"status": "COMPLETED", "tokens": run.tokens,
                                            "amount": run.amount, "report_path": report_path,
@@ -244,6 +289,11 @@ def execute_run(run_id: str, skip_hitl: bool = False) -> None:
         if run:
             run.status = "WAITING_APPROVAL"
             run.features_json = json.dumps({"hitl": {"point": exc.point, "detail": exc.detail}},
+                                           ensure_ascii=False)
+            # 保存断点：state 快照 + 已完成节点，审批后从这里继续
+            run.state_json = json.dumps(state, ensure_ascii=False, default=str)[:200000]
+            run.node_progress = json.dumps({"completed": sorted(completed),
+                                            "interrupted_at": stats.get("current_node", "")},
                                            ensure_ascii=False)
             run.dur_ms = int((time.perf_counter() - started) * 1000)
             db.commit()
@@ -270,19 +320,40 @@ def execute_run(run_id: str, skip_hitl: bool = False) -> None:
 
 
 def create_run(db: Session, agent: Agent, payload: dict, customer_no: str,
-               async_mode: bool = True) -> Run:
+               async_mode: bool = True, idempotency_key: str = "") -> Run:
     dag, errors, _ = validate(json.loads(agent.dag_json or "{}"))
     if errors:
         raise DagInvalid(errors)
+
+    key = (idempotency_key or "").strip()
+    if key:
+        existing = (db.query(Run)
+                      .filter(Run.idempotency_key == key,
+                              Run.status.in_(("CREATED", "RUNNING", "WAITING_APPROVAL", "COMPLETED")))
+                      .order_by(Run.created_at.desc()).first())
+        if existing:
+            emit(db, existing.id, "run.idempotent_hit", {"idempotency_key": key})
+            setattr(existing, "_idempotent_hit", True)
+            return existing
+
     run = Run(id=uid("run"), agent_id=agent.id, agent_name=agent.name,
               agent_version=agent.version, customer_no=customer_no or "C-DEMO",
               status="CREATED", trace_id=uid("tr"), thread_id=uid("th"),
+              idempotency_key=key,
               input_json=json.dumps(payload, ensure_ascii=False))
     db.add(run)
     db.commit()
 
     if async_mode:
-        threading.Thread(target=execute_run, args=(run.id,), daemon=True).start()
+        from .executor import submit_run
+
+        if not submit_run(run.id):
+            run.status = "REJECTED"
+            run.error = "运行队列已满（AH-RUNTIME-429）"
+            run.finished_at = datetime.now()
+            db.commit()
+            raise ApiError("运行队列已满，请稍后重试", code="AH-RUNTIME-429", status_code=429,
+                           headers={"Retry-After": "5"})
     else:
         execute_run(run.id)
     db.refresh(run)
@@ -300,7 +371,8 @@ def approve(db: Session, run_id: str, decision: str, comment: str = "") -> Run:
     if decision.upper() == "APPROVED":
         run.status = "RUNNING"
         db.commit()
-        execute_run(run.id, skip_hitl=True)
+        # 断点续跑：恢复 state 快照，跳过已完成节点与审批节点，避免重复执行工具
+        execute_run(run.id, skip_hitl=True, resume=True)
     else:
         run.status = "REJECTED"
         run.finished_at = datetime.now()

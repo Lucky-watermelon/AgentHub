@@ -99,7 +99,51 @@ print(resp.choices[0].message.content)
 - 本地演示凭证：`ah_pat_demo_local_dev`（服务端只存 sha256 摘要）
 - `AH_AUTH_REQUIRED=true` 时对 `/api/v1` 与 `/v1` 强制校验，未开启时允许匿名调用并记录调用方
 
+### 幂等调用
+
+业务侧重试时带上幂等键，平台保证同一键只执行一次：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/invoke/ag_001 \
+  -H "Idempotency-Key: order-20261120-0001" \
+  -H "Authorization: Bearer ah_pat_demo_local_dev" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_no":"C-2026-0031","payload":{...}}'
+```
+
+- 支持请求体 `idempotency_key` 或请求头 `Idempotency-Key`
+- 命中（状态为 CREATED / RUNNING / WAITING_APPROVAL / COMPLETED）直接返回原 `run_id`，响应里 `idempotent_reuse=true`
+- 失败或被拒绝的运行不占用幂等键，可重试
+
 控制台「接入与凭证 → 对外调用」页可直接复制 curl / Python / Node 片段并在线试调用。
+
+## 运行与并发
+
+| 项 | 默认 | 说明 |
+| --- | --- | --- |
+| `AH_RUN_WORKERS` | 4 | 运行执行器 worker 数（有界线程池） |
+| `AH_RUN_QUEUE_SIZE` | 32 | 排队上限，超出返回 `AH-RUNTIME-429` + `Retry-After` |
+
+- SQLite 开启 WAL + `busy_timeout=15s`，多线程写入不再互相长时间阻塞
+- 停机时等待在途运行结束（优雅停机），不会硬切断任务
+- 进程池状态见 `GET /api/v1/system/health` 的 `run_pool`
+
+**HITL 断点续跑**：运行在审批节点中断时保存状态快照与已完成节点；审批通过后只执行剩余节点，
+已完成的工具调用不会重复执行（可通过 `tool_calls` 增量与 `node.skipped` 事件验证）。
+
+## 数据库迁移
+
+启动时自动执行 `agenthub/migrations/` 下未应用的迁移，版本记录在 `schema_migrations` 表。
+
+```
+agenthub/migrations/
+  runner.py              执行器（版本表 + 顺序应用）
+  m0001_baseline.py      基线
+  m0002_run_resume.py    runs: idempotency_key / state_json / node_progress
+```
+
+新增迁移：添加 `m000N_xxx.py`，暴露 `VERSION`、`DESCRIPTION`、`up(conn)`，并注册到 `runner._migration_modules()`。
+迁移必须幂等（先判断列/索引是否存在），因为新库由 `create_all` 直接建出目标结构。
 
 ## 配额与限流
 
@@ -146,6 +190,8 @@ export AH_LANGFUSE_HOST=http://127.0.0.1:3100   # 自托管地址
 | `AH_AUTH_REQUIRED` | false | 接入业务系统时置 true |
 | `AH_DATA_DIR` | data | 数据目录 |
 | `AH_REPORTS_DIR` | reports | 报告产物目录 |
+| `AH_RUN_WORKERS` | 4 | 运行执行器 worker 数 |
+| `AH_RUN_QUEUE_SIZE` | 32 | 运行排队上限 |
 | `AH_LANGFUSE_ENABLED` | false | Langfuse 旁路开关（控制台也可切换） |
 | `AH_LANGFUSE_HOST` | http://127.0.0.1:3100 | 自托管地址 |
 | `AH_LANGFUSE_PUBLIC_KEY` / `AH_LANGFUSE_SECRET_KEY` | 空 | 上报凭证 |

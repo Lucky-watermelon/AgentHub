@@ -116,6 +116,7 @@ class RunCreate(BaseModel):
     customer_no: str = ""
     payload: dict[str, Any] = {}
     async_mode: bool = False
+    idempotency_key: str = ""
 
 
 class InvokeRequest(BaseModel):
@@ -124,6 +125,7 @@ class InvokeRequest(BaseModel):
     customer_no: str = ""
     payload: dict[str, Any] = {}
     mode: str = "sync"  # sync / async
+    idempotency_key: str = ""
     credit: dict[str, Any] | None = None
     finance: dict[str, Any] | None = None
     judicial: dict[str, Any] | None = None
@@ -216,7 +218,8 @@ def run_out(r: Run) -> dict:
     return {
         "id": r.id, "agent_id": r.agent_id, "agent": r.agent_name, "v": r.agent_version,
         "customer": r.customer_no, "status": r.status, "trace_id": r.trace_id,
-        "thread_id": r.thread_id, "features": json.loads(r.features_json or "{}"),
+        "thread_id": r.thread_id, "idempotency_key": r.idempotency_key or "",
+        "features": json.loads(r.features_json or "{}"),
         "output": json.loads(r.output_json or "{}"), "report_path": r.report_path,
         "tokens": r.tokens, "amount": r.amount, "dur_ms": r.dur_ms, "error": r.error,
         "start": dt(r.created_at), "finished": dt(r.finished_at),

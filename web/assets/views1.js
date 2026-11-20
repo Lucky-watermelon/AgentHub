@@ -140,6 +140,7 @@ P1["agents/runs"] = async () => {
           ["trace_id", '<span class="mono">' + esc(detail.trace_id) + "</span>", true],
           ["thread_id", '<span class="mono">' + esc(detail.thread_id) + "</span>", true],
           ["耗时 / tokens", (detail.dur_ms / 1000).toFixed(2) + " s / " + num(detail.tokens), true],
+          ["幂等键", detail.idempotency_key ? '<span class="mono">' + esc(detail.idempotency_key) + "</span>" : "—"],
           ["报告", detail.report_path ? '<a class="tag info" target="_blank" href="/' + esc(detail.report_path) + '">打开 HTML 报告</a>' : "—", true],
           ["错误", esc(detail.error || "—")]
         ]), { cls: "col-8" }))

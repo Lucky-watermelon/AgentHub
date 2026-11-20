@@ -76,6 +76,8 @@ def system_health(db: Session = Depends(get_db)):
         settings.reports_path.mkdir(parents=True, exist_ok=True)
     except Exception:
         reports_writable = False
+    from ..executor import pool_stats
+
     return {
         "services": [
             {"name": "ah-api", "status": "健康" if db_ok else "异常", "role": "控制面 / 对客 API"},
@@ -83,6 +85,7 @@ def system_health(db: Session = Depends(get_db)):
             {"name": "postgres/sqlite", "status": "健康" if db_ok else "异常", "role": "元数据 + Checkpoint"},
             {"name": "reports", "status": "健康" if reports_writable else "异常", "role": "报告产物目录"},
         ],
+        "run_pool": pool_stats(),
         "builtin_tools": len(builtin_tools.names()),
         "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }

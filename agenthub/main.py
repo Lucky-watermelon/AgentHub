@@ -1,6 +1,7 @@
 """FastAPI 应用装配：路由、异常、静态资源、初始化。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -22,7 +23,10 @@ logger = logging.getLogger("agenthub")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .executor import ensure_started
+
     init_db()
+    ensure_started()
     if settings.seed_demo:
         db = SessionLocal()
         try:
@@ -31,6 +35,10 @@ async def lifespan(app: FastAPI):
             db.close()
     logger.info("AgentHub 启动完成 profile=%s data=%s", settings.profile, settings.data_path)
     yield
+    # 优雅停机：等待在途运行结束，避免任务被硬切断
+    from .executor import shutdown
+
+    await asyncio.to_thread(shutdown)
 
 
 app = FastAPI(

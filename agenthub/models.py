@@ -110,6 +110,9 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(30), default="CREATED")
     trace_id: Mapped[str] = mapped_column(String(40), index=True, default="")
     thread_id: Mapped[str] = mapped_column(String(40), default="")
+    idempotency_key: Mapped[str] = mapped_column(String(120), default="", index=True)
+    state_json: Mapped[str] = mapped_column(Text, default="")        # HITL 中断时的运行状态快照
+    node_progress: Mapped[str] = mapped_column(Text, default="")     # {"completed": [...], "interrupted_at": "n_x"}
     input_json: Mapped[str] = mapped_column(Text, default="{}")
     output_json: Mapped[str] = mapped_column(Text, default="{}")
     features_json: Mapped[str] = mapped_column(Text, default="{}")

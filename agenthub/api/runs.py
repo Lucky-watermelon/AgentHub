@@ -46,7 +46,9 @@ def create_run(body: RunCreate, db: Session = Depends(get_db)):
     if not agent:
         raise NotFound(f"智能体不存在：{body.agent_id}")
     customer_no = body.customer_no or (body.payload.get("customer_no") or "C-DEMO")
-    run = runner_mod.create_run(db, agent, body.payload, customer_no, async_mode=body.async_mode)
+    run = runner_mod.create_run(db, agent, body.payload, customer_no,
+                                async_mode=body.async_mode,
+                                idempotency_key=body.idempotency_key)
     return run_out(run)
 
 
