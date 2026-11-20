@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     default_model: str = "default-chat"
     llm_timeout_s: int = 60
     llm_mock: bool = True  # true 时不真正出网，用规则化文本兜底
+    llm_max_tokens: int = 512       # 单次生成上限，控制成本
+    llm_temperature: float = 0.2
+    llm_disable_thinking: bool = True  # DeepSeek 默认开启思考模式，结构化任务关闭更省更快
 
     # 运行
     run_timeout_s: int = 300

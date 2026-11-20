@@ -44,14 +44,14 @@ def test_seed_agents(client):
     rows = resp.json()
     assert len(rows) >= 1
     assert rows[0]["dag_ok"] is True
-    assert rows[0]["node_count"] == 9
+    assert rows[0]["node_count"] == 10
 
 
 def test_dag_structure(client):
     resp = client.get("/api/v1/agents/ag_001/dag")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["structure"]["nodes"]) == 9
+    assert len(data["structure"]["nodes"]) == 10
     assert data["errors"] == []
 
 

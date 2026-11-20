@@ -27,7 +27,9 @@ SAMPLE_DAG = {
         {"id": "n_judicial", "type": "tool", "name": "司法风险标签", "tool": "司法风险标签",
          "timeout": 6, "next": ["n_merge"]},
         {"id": "n_merge", "type": "llm", "name": "特征聚合与风险判读", "model": "default-chat",
-         "timeout": 60, "next": ["n_hitl"]},
+         "timeout": 60, "next": ["n_ai"]},
+        {"id": "n_ai", "type": "tool", "name": "AI 风险要点", "tool": "AI 风险要点",
+         "model": "default-chat", "timeout": 45, "next": ["n_hitl"]},
         {"id": "n_hitl", "type": "hitl", "name": "高风险客户人工复核", "next": ["n_report"]},
         {"id": "n_report", "type": "tool", "name": "HTML 报告渲染", "tool": "HTML 报告渲染",
          "timeout": 20, "next": ["n_end"]},
@@ -67,6 +69,7 @@ def seed_all(db: Session) -> None:
             "征信报文解析": ("内置", "Python", "read", 8),
             "财报指标计算": ("内置", "Python", "read", 10),
             "司法风险标签": ("内置", "Python", "read", 6),
+            "AI 风险要点": ("内置", "LLM", "read", 45),
             "HTML 报告渲染": ("内置", "Jinja2", "fs:write", 20),
             "JSON 提取器": ("内置", "Python", "read", 3),
             "计算器": ("内置", "Python", "read", 3),
@@ -117,8 +120,8 @@ def seed_all(db: Session) -> None:
                      base_url="http://127.0.0.1:11434/v1", models="qwen2.5:7b / bge-m3",
                      caps="聊天 / 流式 / 函数调用 / embedding", status="healthy"),
             Provider(id="prov_deepseek", name="DeepSeek", kind="云端",
-                     base_url="https://api.deepseek.com/v1", models="deepseek-chat",
-                     caps="聊天 / 流式 / 函数调用", status="healthy"),
+                     base_url="https://api.deepseek.com/v1", models="deepseek-flash",
+                     caps="聊天 / 流式 / 函数调用 / JSON 模式", status="healthy"),
         ])
 
     if db.query(Alias).count() == 0:
@@ -129,7 +132,7 @@ def seed_all(db: Session) -> None:
                   caps="聊天", status="启用"),
             Alias(id="al_03", alias="default-embedding", provider_name="rule", model="hash-embedding",
                   caps="embedding", status="默认"),
-            Alias(id="al_04", alias="cloud-deepseek", provider_name="DeepSeek", model="deepseek-chat",
+            Alias(id="al_04", alias="cloud-deepseek", provider_name="DeepSeek", model="deepseek-flash",
                   caps="聊天 / 流式 / 函数调用", status="降级备用"),
         ])
         db.add(Setting(key="fallback", value=json.dumps(["default-chat", "default-chat-lite"])))

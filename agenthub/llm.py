@@ -67,7 +67,7 @@ def _mock_text(prompt: str, context: dict | None) -> str:
     return f"综合判断：{body}。整体风险等级为{judicial.get('level', '中')}风险，建议结合人工复核结论后出具报告。"
 
 
-def _remote(provider: Provider, alias: Alias, prompt: str) -> dict:
+def _remote(provider: Provider, alias: Alias, prompt: str, extra: dict | None = None) -> dict:
     url = provider.base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if provider.api_key:
@@ -75,8 +75,14 @@ def _remote(provider: Provider, alias: Alias, prompt: str) -> dict:
     body = {
         "model": alias.model or provider.models.split("/")[0].strip() or "default",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
+        "temperature": settings.llm_temperature,
+        "max_tokens": settings.llm_max_tokens,
     }
+    if settings.llm_disable_thinking:
+        # DeepSeek 默认开启思考模式；抽取/改写类任务关闭后更省 token、延迟更低
+        body["thinking"] = {"type": "disabled"}
+    if extra:
+        body.update(extra)
     with httpx.Client(timeout=settings.llm_timeout_s) as client:
         resp = client.post(url, json=body, headers=headers)
         resp.raise_for_status()
@@ -84,12 +90,14 @@ def _remote(provider: Provider, alias: Alias, prompt: str) -> dict:
     text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
     usage = data.get("usage") or {}
     tokens = int(usage.get("total_tokens") or 0) or max(1, len(prompt) // 3)
+    cached = int((usage.get("prompt_tokens_details") or {}).get("prompt_cache_hit_tokens") or 0)
     return {"text": text, "tokens": tokens, "provider": provider.name,
-            "model": alias.model, "alias": alias.alias, "degraded": False}
+            "model": data.get("model") or alias.model, "alias": alias.alias,
+            "cached_tokens": cached, "degraded": False}
 
 
 def complete(db: Session, prompt: str, alias_name: str | None = None,
-             context: dict | None = None) -> dict:
+             context: dict | None = None, extra: dict | None = None) -> dict:
     """按别名 + 降级链依次尝试，全部失败抛 AH-MODEL-502。"""
     chain = get_chain(db)
     names: list[str] = []
@@ -110,9 +118,10 @@ def complete(db: Session, prompt: str, alias_name: str | None = None,
             text = _mock_text(prompt, context)
             return {"text": text, "tokens": max(1, len(prompt) // 3 + len(text) // 3),
                     "provider": provider.name, "model": alias.model,
-                    "alias": alias.alias, "degraded": provider.kind == "规则"}
+                    "alias": alias.alias, "cached_tokens": 0,
+                    "degraded": provider.kind == "规则"}
         try:
-            return _remote(provider, alias, prompt)
+            return _remote(provider, alias, prompt, extra=extra)
         except Exception as exc:  # 网络/协议异常都进入下一级
             errors.append(f"{name}: {exc}")
 

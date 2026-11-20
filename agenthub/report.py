@@ -46,6 +46,7 @@ def render_report(customer_no: str, payload: dict, features: dict, summary: str 
         credit=credit,
         finance=finance,
         judicial=judicial,
+        ai=features.get("ai") or {},
         flags=flags,
         payload=payload,
         pct=_pct,

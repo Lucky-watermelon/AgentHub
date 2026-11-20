@@ -9,8 +9,8 @@ def test_sample_dag_is_valid():
     dag, errors, warnings = validate(SAMPLE_DAG)
     assert errors == []
     assert warnings == []
-    assert len(dag["nodes"]) == 9
-    assert len(dag["edges"]) == 10
+    assert len(dag["nodes"]) == 10
+    assert len(dag["edges"]) == 11
     assert dag["entry"] == "n_start"
 
 
@@ -69,7 +69,7 @@ def test_layout_and_structure():
     assert lay["level"]["n_start"] == 0
     assert lay["level"]["n_merge"] >= 2
     st = structure(dag)
-    assert len(st["nodes"]) == 9
+    assert len(st["nodes"]) == 10
     assert all("x" in n and "y" in n for n in st["nodes"])
 
 

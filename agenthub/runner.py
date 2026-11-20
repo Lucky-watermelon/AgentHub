@@ -129,7 +129,9 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                 out = builtin_tools.invoke(tool_name, state.get("payload") or {},
                                            {"customer_no": state.get("customer_no", ""),
                                             "features": state.get("features") or {},
-                                            "summary": state.get("summary", "")})
+                                            "summary": state.get("summary", ""),
+                                            "db": db,
+                                            "model": node.get("model") or settings.default_model})
                 dur = int((time.perf_counter() - started) * 1000)
                 record_tool_call(db, run, tool_name, params, "成功", dur)
                 emit(db, run.id, "tool.result", {"tool": tool_name, "status": "OK", "dur_ms": dur,

@@ -87,6 +87,17 @@
     <tr><th>风险等级</th><td>{{ judicial.level or "低" }}</td></tr>
   </table>
 
+  {% if ai and ai.points %}
+  <h2>四、AI 解读</h2>
+  <div class="summary">
+    <p>{{ ai.suggestion or "模型未给出建议" }}</p>
+    <ul class="flags">
+      {% for p in ai.points %}<li>{{ p }}</li>{% endfor %}
+    </ul>
+    <div class="meta" style="margin-top:8px">风险等级：{{ ai.level or "—" }} ｜ 模型：{{ ai.model or "—" }}（别名 {{ ai.alias or "—" }}）{% if ai.degraded %} ｜ 已降级{% endif %}</div>
+  </div>
+  {% endif %}
+
   <footer>
     数据来源：本次运行提交的模拟征信 / 财报 / 司法报文。报告由 AgentHub 依据 DAG 流程与技能配置自动生成，
     口径来自知识库「业务口径库」，仅用于平台验证，不作为真实授信决策依据。

@@ -11,6 +11,7 @@ from ..models import Alias, Provider, now
 from ..runner import uid
 from ..schemas import (
     AliasCreate,
+    AliasUpdate,
     ProviderCreate,
     RoutingUpdate,
     alias_out,
@@ -75,6 +76,27 @@ def create_alias(body: AliasCreate, db: Session = Depends(get_db)):
     alias = Alias(id=uid("al"), alias=body.alias, provider_name=body.provider_name,
                   model=body.model or body.alias, caps=body.caps, status="启用")
     db.add(alias)
+    db.commit()
+    return alias_out(alias)
+
+
+@router.patch("/aliases/{alias_name}")
+def update_alias(alias_name: str, body: AliasUpdate, db: Session = Depends(get_db)):
+    """调整别名指向（切换模型只改这里，不动 DAG 与技能配置）。"""
+    alias = db.query(Alias).filter(Alias.alias == alias_name).first()
+    if not alias:
+        raise NotFound("别名不存在")
+    if body.provider_name:
+        if not db.query(Provider).filter(Provider.name == body.provider_name).first():
+            raise ApiError(f"Provider 不存在：{body.provider_name}",
+                           code="AH-MODEL-422", status_code=422)
+        alias.provider_name = body.provider_name
+    if body.model is not None:
+        alias.model = body.model
+    if body.caps is not None:
+        alias.caps = body.caps
+    if body.status is not None:
+        alias.status = body.status
     db.commit()
     return alias_out(alias)
 

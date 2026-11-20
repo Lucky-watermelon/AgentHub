@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import ast
+import json
 import operator
 from typing import Any, Callable
+
+from . import llm
 
 TOOL_REGISTRY: dict[str, Callable[[dict, dict], dict]] = {}
 
@@ -145,6 +148,58 @@ def calculator(payload: dict, ctx: dict) -> dict:
         raise ValueError("表达式不支持")
 
     return {"features": {"calc": {"expr": expr, "value": ev(ast.parse(expr, mode="eval").body)}}}
+
+
+def _extract_json(text: str) -> dict:
+    """从模型输出中抠出 JSON（兼容 ```json 代码块与前后多余文字）。"""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lstrip().lower().startswith("json"):
+            raw = raw.lstrip()[4:]
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(raw[start:end + 1])
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+@register("AI 风险要点")
+def ai_risk_points(payload: dict, ctx: dict) -> dict:
+    """调用真实大模型抽取风险要点（JSON 结构化输出，失败自动降级不阻断运行）。"""
+    features = ctx.get("features") or {}
+    db = ctx.get("db")
+    raw_text = str(payload.get("raw_text") or "")[:1500]
+    prompt = (
+        "你是银行对公风控专家。请基于以下结构化特征与客户说明，只输出严格 JSON，不要任何解释：\n"
+        '{"level": "高|中|低", "points": ["不超过 20 字的要点"], "suggestion": "一句话建议"}\n'
+        f"结构化特征：{json.dumps(features, ensure_ascii=False)[:1800]}\n"
+        f"客户说明或公告：{raw_text or '（无）'}"
+    )
+    try:
+        result = llm.complete(db, prompt, ctx.get("model") or "default-chat",
+                              {"features": features},
+                              extra={"response_format": {"type": "json_object"}})
+        data = _extract_json(result.get("text", ""))
+        points = [str(p)[:40] for p in (data.get("points") or [])][:4]
+        level = str(data.get("level") or "").strip()
+        if level not in ("高", "中", "低"):
+            level = "中"
+        if not points:
+            points = [str(result.get("text", ""))[:60]]
+        return {"features": {"ai": {
+            "level": level, "points": points,
+            "suggestion": str(data.get("suggestion") or "")[:80],
+            "model": result.get("model"), "alias": result.get("alias"),
+            "degraded": result.get("degraded", False),
+            "tokens": result.get("tokens", 0),
+        }}}
+    except Exception as exc:  # 模型不可用时不阻断运行，报告省略该段落
+        return {"features": {"ai": {"level": "", "points": [], "suggestion": "",
+                                    "model": "unavailable", "error": str(exc)[:120]}}}
 
 
 @register("HTML 报告渲染")

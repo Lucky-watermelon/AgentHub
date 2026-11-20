@@ -107,6 +107,13 @@ class AliasCreate(BaseModel):
     caps: str = "聊天 / 流式"
 
 
+class AliasUpdate(BaseModel):
+    provider_name: str | None = None
+    model: str | None = None
+    caps: str | None = None
+    status: str | None = None
+
+
 class RoutingUpdate(BaseModel):
     chain: list[str]
 
