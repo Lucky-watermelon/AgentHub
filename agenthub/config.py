@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     run_timeout_s: int = 300
     seed_demo: bool = True
 
+    # Langfuse 旁路（可选）：关闭时零开销，不影响主链路
+    langfuse_enabled: bool = False
+    langfuse_host: str = "http://127.0.0.1:3100"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_sampling: float = 0.2
+
     @property
     def data_path(self) -> Path:
         p = Path(self.data_dir)

@@ -7,9 +7,11 @@ class ApiError(Exception):
     code = "AH-COMMON-400"
     retryable = False
 
-    def __init__(self, message: str, code: str | None = None, status_code: int | None = None):
+    def __init__(self, message: str, code: str | None = None, status_code: int | None = None,
+                 headers: dict[str, str] | None = None):
         super().__init__(message)
         self.message = message
+        self.headers = headers or {}
         if code:
             self.code = code
         if status_code:

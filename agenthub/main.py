@@ -75,7 +75,8 @@ async def api_error_handler(request: Request, exc: ApiError):
     payload = {"code": exc.code, "message": exc.message, "retryable": exc.retryable}
     if getattr(exc, "errors", None):
         payload["errors"] = exc.errors
-    return JSONResponse(status_code=exc.status_code, content=payload)
+    headers = getattr(exc, "headers", None) or None
+    return JSONResponse(status_code=exc.status_code, content=payload, headers=headers)
 
 
 @app.get("/health")

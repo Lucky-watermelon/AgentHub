@@ -101,6 +101,39 @@ print(resp.choices[0].message.content)
 
 控制台「接入与凭证 → 对外调用」页可直接复制 curl / Python / Node 片段并在线试调用。
 
+## 配额与限流
+
+按调用凭证（AppKey / PAT）维度三层限额，超限返回 `AH-QUOTA-429` 并带 `Retry-After`：
+
+| 维度 | 说明 | 默认 |
+| --- | --- | --- |
+| RPS | 1 秒滑动窗口内的请求数 | 10 |
+| 并发 | 同时在途请求数 | 4 |
+| 日配额 | 当天累计调用次数，跨日自动重置 | 1000 |
+
+```bash
+GET  /api/v1/quota              # 各凭证的策略与今日用量
+PUT  /api/v1/quota/{key_id}     # 调整 rps / concurrency / daily_calls / enabled
+POST /api/v1/quota/{key_id}/reset
+```
+
+控制台「接入与凭证 → AppKey」可直接编辑与重置。限流状态在进程内存，多副本部署需换 Redis。
+
+## 可观测性（Langfuse 旁路）
+
+可选，关闭时零开销，上报失败不影响运行结果。
+
+```bash
+export AH_LANGFUSE_PUBLIC_KEY=pk-xxx
+export AH_LANGFUSE_SECRET_KEY=sk-xxx
+export AH_LANGFUSE_HOST=http://127.0.0.1:3100   # 自托管地址
+```
+
+- 通过 Langfuse Ingestion API 上报，无额外 SDK 依赖
+- 一次运行 = 一条 trace，节点/工具为 span，模型调用为 generation
+- 开关与采样率存在数据库（控制台「运行监控 → Langfuse」可调），重启后保持
+- `POST /api/v1/observability/langfuse/test` 可验证连通性
+
 ## 配置
 
 环境变量或 `.env`（前缀 `AH_`）：
@@ -113,6 +146,10 @@ print(resp.choices[0].message.content)
 | `AH_AUTH_REQUIRED` | false | 接入业务系统时置 true |
 | `AH_DATA_DIR` | data | 数据目录 |
 | `AH_REPORTS_DIR` | reports | 报告产物目录 |
+| `AH_LANGFUSE_ENABLED` | false | Langfuse 旁路开关（控制台也可切换） |
+| `AH_LANGFUSE_HOST` | http://127.0.0.1:3100 | 自托管地址 |
+| `AH_LANGFUSE_PUBLIC_KEY` / `AH_LANGFUSE_SECRET_KEY` | 空 | 上报凭证 |
+| `AH_LANGFUSE_SAMPLING` | 0.2 | 采样率 |
 
 ## 测试
 

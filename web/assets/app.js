@@ -11,7 +11,8 @@ const NAV = [
   { id: "tools", name: "工具", ico: "TL", group: "能力资产", tabs: [["list", "工具清单"], ["calls", "调用记录"]] },
   { id: "kb", name: "知识库", ico: "KB", group: "能力资产", tabs: [["docs", "文档与切片"], ["test", "检索测试"]] },
   { id: "models", name: "模型接入", ico: "MD", group: "能力资产", tabs: [["list", "Provider 与别名"], ["routing", "降级链"]] },
-  { id: "observe", name: "运行监控", ico: "OB", group: "运行与接入", tabs: [["traces", "Trace"], ["stats", "统计"]] },
+  { id: "observe", name: "运行监控", ico: "OB", group: "运行与接入", tabs: [
+    ["traces", "Trace"], ["stats", "统计"], ["langfuse", "Langfuse"]] },
   { id: "access", name: "接入与凭证", ico: "AP", group: "运行与接入", tabs: [
     ["keys", "AppKey"], ["invoke", "对外调用"], ["contract", "接口契约"]] },
 ];

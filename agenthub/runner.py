@@ -261,6 +261,12 @@ def execute_run(run_id: str, skip_hitl: bool = False) -> None:
             emit(db, run.id, "run.failed", {"error": str(exc)[:400], "code": "AH-RUN-500"})
     finally:
         db.close()
+        try:  # Langfuse 旁路上报：关闭时零开销，失败不影响运行结果
+            from .observability import report_run_async
+
+            report_run_async(run_id)
+        except Exception:
+            pass
 
 
 def create_run(db: Session, agent: Agent, payload: dict, customer_no: str,

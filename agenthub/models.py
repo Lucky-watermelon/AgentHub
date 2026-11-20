@@ -211,3 +211,31 @@ class AppKey(Base):
     status: Mapped[str] = mapped_column(String(20), default="启用")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     expires_at: Mapped[str] = mapped_column(String(30), default="")
+
+
+class QuotaPolicy(Base):
+    """按调用凭证（AppKey / PAT）维度的限额策略。"""
+
+    __tablename__ = "quota_policies"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    app_key_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    rps: Mapped[int] = mapped_column(Integer, default=10)          # 每秒请求数上限，0 表示不限
+    concurrency: Mapped[int] = mapped_column(Integer, default=4)   # 并发上限，0 表示不限
+    daily_calls: Mapped[int] = mapped_column(Integer, default=1000)  # 日调用次数上限，0 表示不限
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class QuotaUsage(Base):
+    """按天累计的调用量，用于日配额判定与用量展示。"""
+
+    __tablename__ = "quota_usage"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    app_key_id: Mapped[str] = mapped_column(String(40), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+    blocks: Mapped[int] = mapped_column(Integer, default=0)   # 被限流拦截次数
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)

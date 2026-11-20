@@ -16,10 +16,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import runner as runner_mod
-from ..auth import key_label, optional_key
+from ..auth import key_label
 from ..db import get_db
 from ..errors import ApiError, NotFound
 from ..models import Agent, AppKey, Run
+from ..quota import quota_guard
 from ..runner import emit
 from ..schemas import CompatChatRequest, InvokeRequest, run_out
 
@@ -106,7 +107,7 @@ def invoke_info(agent_id: str, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/invoke/{agent_id}")
 def invoke(agent_id: str, body: InvokeRequest, request: Request,
-           db: Session = Depends(get_db), key: AppKey | None = Depends(optional_key)):
+           db: Session = Depends(get_db), key: AppKey | None = Depends(quota_guard)):
     agent = _resolve_agent(db, agent_id)
     payload = _payload_of(body)
     if not payload:
@@ -174,7 +175,7 @@ def compat_models(db: Session = Depends(get_db)):
 
 @compat.post("/chat/completions")
 def chat_completions(body: CompatChatRequest, request: Request,
-                     db: Session = Depends(get_db), key: AppKey | None = Depends(optional_key)):
+                     db: Session = Depends(get_db), key: AppKey | None = Depends(quota_guard)):
     agent = _resolve_agent(db, body.model)
     content = "\n".join(m.content for m in body.messages)
     payload = _extract_payload(content)

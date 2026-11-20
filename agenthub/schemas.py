@@ -155,6 +155,19 @@ class KeyCreate(BaseModel):
     days: int = 365
 
 
+class QuotaUpdate(BaseModel):
+    rps: int | None = None
+    concurrency: int | None = None
+    daily_calls: int | None = None
+    enabled: bool | None = None
+
+
+class LangfuseUpdate(BaseModel):
+    enabled: bool | None = None
+    sampling: float | None = None
+    host: str | None = None
+
+
 # ---------------- 序列化 ----------------
 def agent_out(a: Agent) -> dict:
     return {

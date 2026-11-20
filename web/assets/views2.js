@@ -156,6 +156,43 @@ P2["observe/stats"] = async () => {
     + '<div class="footnote">统计口径：成功率 = 完成 Run / 总 Run；耗时为端到端，含模型与工具调用。生成时间 ' + esc(s.generated_at) + "</div>";
 };
 
+/* ================= Langfuse 旁路 ================= */
+P2["observe/langfuse"] = async () => {
+  const lf = await api("/observability/langfuse");
+  const status = lf.enabled ? pill("已启用", "ok") : pill("未启用", "mute");
+  const conf = lf.configured ? pill("密钥已配置", "ok") : pill("缺少密钥", "err");
+  return head("Langfuse 旁路", "可选的全链路观测：上报失败不影响运行结果，关闭时零开销",
+      btn(lf.enabled ? "关闭上报" : "启用上报", "langfuse.toggle", { enabled: lf.enabled ? "0" : "1" },
+        lf.enabled ? "danger" : "primary")
+      + btn("调整配置", "langfuse.config", {}, "")
+      + btn("测试连通性", "langfuse.test", {}, ""))
+    + note("密钥通过环境变量配置：<b>AH_LANGFUSE_PUBLIC_KEY</b> / <b>AH_LANGFUSE_SECRET_KEY</b>；开关与采样率保存在数据库，重启后保持。")
+    + grid(card("接入状态", kv([
+        ["开关", status, true],
+        ["密钥", conf, true],
+        ["自托管地址", '<span class="mono">' + esc(lf.host) + "</span>", true],
+        ["采样率", pct(lf.sampling, 0)],
+        ["上报模式", esc(lf.mode)],
+        ["实现方式", "Langfuse Ingestion API（httpx，无额外依赖）"],
+      ]), { cls: "col-6" }),
+      card("事件映射", code(esc("一次运行  → trace（name = 智能体 v版本）\n"
+        + "node.start → span: node:<node_id>\n"
+        + "tool.result → span: tool:<tool_name>（失败记 ERROR）\n"
+        + "message.delta → generation: gen_ai.chat（model / output）\n"
+        + "trace.metadata → run_id / customer_no / status / tokens / dur_ms")), { cls: "col-6" }))
+    + grid(card("上报统计", kv([
+        ["成功", '<span class="tag ok">' + lf.sent + "</span>", true],
+        ["失败", lf.failed ? '<span class="tag err">' + lf.failed + "</span>" : '<span class="tag ok">0</span>', true],
+        ["采样跳过", lf.skipped],
+        ["最近上报", esc(lf.last_at || "—")],
+      ]) + (lf.last_error
+        ? note("最近一次错误：" + esc(lf.last_error), "err")
+        : note("暂无上报错误。")), { cls: "col-7" }),
+      card("关闭后的影响", '<div class="srcline">本地 Trace 表是主数据，关闭 Langfuse 不影响运行、报告与统计。</div>'
+        + '<div class="srcline">采集口径：每次运行一条 trace，节点与工具为 span，模型调用为 generation。</div>'
+        + '<div class="srcline">多副本部署时建议按采样率上报，避免观测链路成为瓶颈。</div>', { cls: "col-5" }));
+};
+
 /* ================= 接入与凭证 ================= */
 P2["access/invoke"] = async () => {
   const agents = await api("/invoke/agents");
@@ -258,18 +295,40 @@ P2["access/invoke"] = async () => {
 };
 
 P2["access/keys"] = async () => {
-  const keys = await api("/keys");
+  const [keys, quotas] = await Promise.all([api("/keys"), api("/quota")]);
+  const qmap = {};
+  (quotas || []).forEach(q => { qmap[q.key_id] = q; });
   const cols = [
     { t: "应用", render: r => esc(r.app) },
     { t: "类型", render: r => pill(r.type, "info") },
     { t: "前缀", render: r => '<span class="mono">' + esc(r.prefix) + "</span>" },
-    { t: "创建", render: r => fmtTime(r.created) },
-    { t: "过期", render: r => esc(r.expires) },
+    { t: "今日 / 日配额", render: r => {
+        const q = qmap[r.id];
+        if (!q) return "—";
+        const limit = q.daily_calls ? num(q.daily_calls) : "不限";
+        const tone = q.daily_calls && q.used_calls / q.daily_calls >= 0.8 ? "err" : "";
+        return '<span class="' + (tone ? "tag " + tone : "") + '">' + num(q.used_calls) + " / " + limit + "</span>";
+      } },
+    { t: "RPS / 并发", render: r => { const q = qmap[r.id]; return q ? q.rps + " / " + q.concurrency : "—"; } },
+    { t: "拦截", render: r => { const q = qmap[r.id]; return q && q.blocked ? '<span class="tag err">' + q.blocked + "</span>" : "0"; } },
     { t: "状态", render: r => statusPill(r.status) },
-    { t: "操作", render: r => btn(r.status === "停用" ? "启用" : "停用", "key.toggle", { id: r.id, status: r.status === "停用" ? "启用" : "停用" }, "sm") }
+    { t: "操作", render: r => '<div class="ops">' +
+        btn("配额", "quota.edit", { id: r.id }, "sm") +
+        btn(r.status === "停用" ? "启用" : "停用", "key.toggle", { id: r.id, status: r.status === "停用" ? "启用" : "停用" }, "sm") + "</div>" }
   ];
+  const quotaCards = (quotas || []).map(q => '<div class="hrow">' +
+      '<div><div class="n">' + esc(q.app) + ' <span class="mono">' + esc(q.prefix) + "</span></div>" +
+      '<div class="s">今日 ' + num(q.used_calls) + " 次 · 拦截 " + q.blocked + " 次 · 实时窗口 " + q.live.window + "/" + q.live.rps_limit + " · 在途 " + q.live.inflight + "</div></div>" +
+      '<span class="r">' + bar(q.daily_calls ? q.used_calls / q.daily_calls : 0, q.daily_calls && q.used_calls / q.daily_calls > 0.8 ? "err" : "ok") +
+      btn("重置", "quota.reset", { id: q.key_id }, "sm") + "</span></div>").join("");
+
   return head("AppKey", "业务系统调用平台的凭证；明文只在签发时返回一次", btn("签发凭证", "key.new", {}, "primary"))
     + grid(card("凭证清单", tbl(cols, keys), { cls: "col-12" }))
+    + grid(card("配额与限流", quotaCards || '<div class="empt">暂无凭证</div>', { cls: "col-7" }),
+      card("限额口径", '<div class="srcline">RPS：1 秒滑动窗口内的请求数上限。</div>'
+        + '<div class="srcline">并发：同时在途的请求数上限，超限立即拒绝。</div>'
+        + '<div class="srcline">日配额：当天累计调用次数上限，跨日自动重置。</div>'
+        + '<div class="srcline">超限返回 <span class="mono">AH-QUOTA-429</span> 并带 Retry-After；单机内存实现，多副本需换 Redis。</div>', { cls: "col-5" }))
     + grid(card("使用方式", code(esc("Authorization: Bearer ah_live_xxxx\n\n# 服务端只存 sha256 摘要，日志与响应体不含明文")), { cls: "col-6" }),
       card("权限说明", '<div class="srcline">AppKey 用于业务系统调用 <b>/api/v1/invoke</b> 与 <b>/v1/chat/completions</b>。</div>'
         + '<div class="srcline">本地演示凭证：<span class="mono">ah_pat_demo_local_dev</span>（仅本地调试使用）。</div>'
@@ -295,6 +354,8 @@ P2["access/contract"] = async () => {
     ["POST", "/api/v1/kb/retrieve", "知识库检索", "AppKey"],
     ["GET", "/api/v1/traces/{trace_id}", "Trace 与 span 树", "AppKey"],
     ["GET", "/api/v1/stats", "运行与工具统计", "AppKey"],
+    ["GET", "/api/v1/quota", "配额策略与今日用量", "PAT"],
+    ["POST", "/api/v1/observability/langfuse/test", "Langfuse 连通性测试", "PAT"],
     ["GET", "/health", "健康检查", "—"],
   ].map(r => ({ method: r[0], path: r[1], desc: r[2], auth: r[3] }));
   const cols = [
@@ -421,6 +482,87 @@ A2["key.create"] = async form => {
 A2["key.toggle"] = async d => {
   try { await api("/keys/" + d.id, { method: "PATCH", body: { status: d.status } }); toast("状态已更新", d.status); render(); }
   catch (e) { toast("操作失败", e.message, "err"); }
+};
+
+/* ===== 动作：配额 ===== */
+A2["quota.edit"] = async d => {
+  const list = await api("/quota");
+  const q = list.find(x => x.key_id === d.id);
+  if (!q) { toast("无配额记录", "请刷新后重试", "warn"); return; }
+  modalForm("配额与限流 · " + q.app, "quota.save",
+    '<input type="hidden" name="id" value="' + esc(q.key_id) + '">'
+    + '<div class="frow">'
+    + fld("RPS（0 不限）", inp("rps", q.rps, 'type="number"'))
+    + fld("并发上限（0 不限）", inp("concurrency", q.concurrency, 'type="number"'))
+    + "</div>"
+    + '<div class="frow">'
+    + fld("日调用配额（0 不限）", inp("daily_calls", q.daily_calls, 'type="number"'))
+    + fld("启用限额", sel("enabled", [["1", "启用"], ["0", "关闭"]], q.enabled ? "1" : "0"))
+    + "</div>"
+    + note("今日已用 " + num(q.used_calls) + " 次，拦截 " + q.blocked + " 次；调整后立即生效。"),
+    "保存");
+};
+
+A2["quota.save"] = async form => {
+  const o = formObj(form);
+  try {
+    await api("/quota/" + o.id, {
+      method: "PUT",
+      body: {
+        rps: Number(o.rps) || 0,
+        concurrency: Number(o.concurrency) || 0,
+        daily_calls: Number(o.daily_calls) || 0,
+        enabled: o.enabled === "1",
+      },
+    });
+    closeModal(); toast("配额已保存", "立即生效"); render();
+  } catch (e) { toast("保存失败", e.message, "err"); }
+};
+
+A2["quota.reset"] = async d => {
+  try { await api("/quota/" + d.id + "/reset", { method: "POST" }); toast("用量已重置", "今日调用数归零"); render(); }
+  catch (e) { toast("重置失败", e.message, "err"); }
+};
+
+/* ===== 动作：Langfuse ===== */
+A2["langfuse.toggle"] = async d => {
+  try {
+    const res = await api("/observability/langfuse", { method: "POST", body: { enabled: d.enabled === "1" } });
+    toast(res.enabled ? "已启用 Langfuse 上报" : "已关闭 Langfuse 上报",
+      res.enabled ? "旁路采样 " + pct(res.sampling, 0) : "主链路继续使用本地 Trace", "ok");
+    render();
+  } catch (e) { toast("操作失败", e.message, "err"); }
+};
+
+A2["langfuse.config"] = async () => {
+  const lf = await api("/observability/langfuse");
+  modalForm("Langfuse 配置", "langfuse.save",
+    fld("自托管地址", inp("host", lf.host))
+    + fld("采样率（0-1）", inp("sampling", lf.sampling, 'type="number" step="0.05" min="0" max="1"'))
+    + note("公钥 / 私钥通过环境变量 <b>AH_LANGFUSE_PUBLIC_KEY</b> 与 <b>AH_LANGFUSE_SECRET_KEY</b> 配置，不在页面保存。"),
+    "保存");
+};
+
+A2["langfuse.save"] = async form => {
+  const o = formObj(form);
+  try {
+    await api("/observability/langfuse", {
+      method: "POST",
+      body: { host: o.host, sampling: Number(o.sampling) },
+    });
+    closeModal(); toast("配置已保存", "开关与采样率重启后仍保持"); render();
+  } catch (e) { toast("保存失败", e.message, "err"); }
+};
+
+A2["langfuse.test"] = async () => {
+  try {
+    const res = await api("/observability/langfuse/test", { method: "POST" });
+    modal("Langfuse 连通性测试",
+      (res.status === "sent" ? note(res.message) : note(res.message, "err"))
+      + '<div class="footnote">测试只发送一条 trace，不包含业务数据。</div>',
+      btn("关闭", "modal.close", {}, "primary"));
+    render();
+  } catch (e) { toast("测试失败", e.message, "err"); }
 };
 
 /* ===== 动作：对外调用 ===== */
