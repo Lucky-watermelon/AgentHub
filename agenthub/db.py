@@ -15,7 +15,16 @@ class Base(DeclarativeBase):
 
 IS_SQLITE = settings.sqlalchemy_url.startswith("sqlite")
 connect_args = {"check_same_thread": False, "timeout": 15} if IS_SQLITE else {}
-engine = create_engine(settings.sqlalchemy_url, connect_args=connect_args, future=True)
+engine = create_engine(
+    settings.sqlalchemy_url,
+    connect_args=connect_args,
+    future=True,
+    # 压测发现：默认 pool_size=5 + overflow=10 在并发 20 时耗尽，出现 30s 等待后失败
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+    pool_pre_ping=not IS_SQLITE,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 

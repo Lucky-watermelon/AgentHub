@@ -45,6 +45,11 @@ def emit(db: Session, run_id: str, event: str, data: dict) -> None:
     使用独立短事务：事件写入失败不会污染调用方 session（避免 PendingRollback 连锁），
     失败时重试一次以规避 SQLite 瞬时锁冲突。
     """
+    from .tracing import current_request_id
+
+    rid = current_request_id()
+    if rid and isinstance(data, dict):
+        data = {**data, "request_id": rid}
     payload = json.dumps(data, ensure_ascii=False, default=str)
     for attempt in range(2):
         try:
@@ -319,6 +324,34 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
             report_run_async(run_id)
         except Exception:
             pass
+
+
+def recover_stale_runs() -> int:
+    """服务重启后清理僵死运行：RUNNING / CREATED → INTERRUPTED。
+
+    这些运行所在的执行线程已随进程消失，不处理会永久停在 RUNNING。
+    WAITING_APPROVAL 不动：其断点状态已持久化，重启后仍可审批恢复。
+    """
+    recovered: list[str] = []
+    with SessionLocal() as db:
+        rows = (db.query(Run)
+                  .filter(Run.status.in_(("CREATED", "RUNNING")))
+                  .all())
+        for run in rows:
+            run.status = "INTERRUPTED"
+            run.error = "服务重启导致运行中断（AH-RUN-409），可通过重放重跑"
+            run.finished_at = datetime.now()
+            recovered.append(run.id)
+        if recovered:
+            db.commit()
+
+    for run_id in recovered:
+        try:
+            emit(None, run_id, "run.interrupted",
+                 {"reason": "server_restart", "code": "AH-RUN-409"})
+        except Exception:
+            pass
+    return len(recovered)
 
 
 def create_run(db: Session, agent: Agent, payload: dict, customer_no: str,

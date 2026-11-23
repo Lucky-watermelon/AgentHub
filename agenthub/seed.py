@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import time
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from .config import settings
 
 from . import builtin_tools
 from .kb import index_document
@@ -52,6 +58,49 @@ KB_DOCS = [
      "净利润为负且连续两期时标记为持续亏损，与司法失信标签叠加判定为高风险。\n"
      "净利率等于净利润除以营业收入，用于观察盈利质量。"),
 ]
+
+
+logger = logging.getLogger("agenthub.seed")
+
+
+def seed_once(db: Session) -> bool:
+    """多进程安全的一次性初始化。
+
+    多 worker（uvicorn --workers N）会同时执行 startup，若各自 seed 会撞主键。
+    这里用数据目录下的锁文件做进程级互斥：抢到锁的进程执行初始化，
+    其余进程等待其完成（或发现已有数据直接返回）。
+    """
+    lock_path = settings.data_path / ".seed.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        for _ in range(40):  # 最多等 20 秒
+            time.sleep(0.5)
+            try:
+                if db.query(Agent).count() > 0:
+                    return False
+            except Exception:
+                db.rollback()
+        logger.warning("等待 seed 锁超时，跳过初始化")
+        return False
+
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        seed_all(db)
+        return True
+    except IntegrityError:
+        db.rollback()  # 兜底：并发插入冲突说明其他进程已完成
+        logger.info("示例数据已由其他进程初始化")
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def seed_all(db: Session) -> None:

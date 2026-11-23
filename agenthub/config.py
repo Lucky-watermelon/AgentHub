@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     reports_dir: str = "reports"
     web_dir: str = "web"
     database_url: str = ""
+    db_pool_size: int = 20         # 连接池基础大小（压测发现默认 5 在并发 20 时耗尽）
+    db_max_overflow: int = 40
+    db_pool_timeout: int = 10      # 取连接超时（秒），快速失败优于长时间挂起
 
     # HTTP
     host: str = "127.0.0.1"

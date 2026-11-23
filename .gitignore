@@ -10,6 +10,9 @@ prototype/
 data/
 reports/
 logs/
+data_bench/
+reports_bench/
+bench_results/
 *.db
 *.sqlite3
 *.log

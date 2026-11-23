@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SATimeoutError
 
 from . import __version__
 from .api import compat_router, router as api_router
@@ -16,24 +20,73 @@ from .auth import authenticate, extract_token
 from .config import settings
 from .db import SessionLocal, init_db
 from .errors import ApiError
-from .seed import seed_all
+from .seed import seed_once
 
 logger = logging.getLogger("agenthub")
+
+
+class JsonFormatter(logging.Formatter):
+    """结构化日志：单行 JSON，便于采集与检索（含 request_id）。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        from .tracing import current_request_id
+
+        payload = {
+            "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3],
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+            "request_id": current_request_id(),
+        }
+        extra = getattr(record, "extra_fields", None)
+        if isinstance(extra, dict):
+            payload.update(extra)
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)[:1200]
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_logging() -> None:
+    """给应用 logger 单独挂 JSON handler。
+
+    uvicorn 的 dictConfig 会接管 root logger（disable_existing_loggers=True），
+    因此这里显式配置 agenthub 命名空间并关闭向 root 传播，保证结构化日志稳定输出。
+    """
+    access = logging.getLogger("agenthub.access")
+    if any(isinstance(handler.formatter, JsonFormatter) for handler in access.handlers):
+        return
+    from logging.handlers import RotatingFileHandler
+
+    # 落 UTF-8 文件（Windows 控制台重定向时默认编码会破坏中文），按 10MB 轮转
+    handler = RotatingFileHandler(settings.data_path / "agenthub.log", maxBytes=10 * 1024 * 1024,
+                                  backupCount=5, encoding="utf-8")
+    handler.setFormatter(JsonFormatter())
+    for name in ("agenthub", "agenthub.access"):
+        target = logging.getLogger(name)
+        target.handlers = [handler]
+        target.setLevel(logging.INFO)
+        target.propagate = False
+        target.disabled = False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .executor import ensure_started
+    from .runner import recover_stale_runs
 
+    _configure_logging()
     init_db()
     ensure_started()
     if settings.seed_demo:
         db = SessionLocal()
         try:
-            seed_all(db)
+            seed_once(db)
         finally:
             db.close()
-    logger.info("AgentHub 启动完成 profile=%s data=%s", settings.profile, settings.data_path)
+    recovered = recover_stale_runs()
+    logger.info("AgentHub 启动完成 profile=%s data=%s recovered_runs=%s",
+                settings.profile, settings.data_path, recovered,
+                extra={"extra_fields": {"recovered_runs": recovered}})
     yield
     # 优雅停机：等待在途运行结束，避免任务被硬切断
     from .executor import shutdown
@@ -61,6 +114,31 @@ app.include_router(compat_router, prefix="/v1")
 
 
 @app.middleware("http")
+async def request_context(request: Request, call_next):
+    """为每个请求生成 request_id，写入响应头并记录结构化访问日志。"""
+    from .tracing import clear, new_request_id, set_request_id
+
+    rid = request.headers.get("x-request-id") or new_request_id()
+    set_request_id(rid)
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers["X-Request-ID"] = rid
+        return response
+    finally:
+        logging.getLogger("agenthub.access").info("request", extra={"extra_fields": {
+            "method": request.method,
+            "path": request.url.path,
+            "status": status,
+            "dur_ms": round((time.perf_counter() - started) * 1000, 1),
+            "client": request.client.host if request.client else "",
+        }})
+        clear()
+
+
+@app.middleware("http")
 async def auth_guard(request: Request, call_next):
     """AH_AUTH_REQUIRED=true 时校验对外接口凭证（SSE 可用 ?access_token= 传递）。"""
     if settings.auth_required and request.method != "OPTIONS":
@@ -78,9 +156,50 @@ async def auth_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.exception_handler(SQLAlchemyError)
+async def db_error_handler(request: Request, exc: SQLAlchemyError):
+    """数据库锁等待/连接池等异常：统一映射为可重试的 503，而不是裸 500。
+
+    注意：SQLite 锁超时会被 SQLAlchemy 包装成 PendingRollbackError，
+    因此这里按基类 SQLAlchemyError 捕获，再做关键字判定。
+    """
+    from .tracing import current_request_id
+
+    detail = str(getattr(exc, "orig", None) or exc)
+    lowered = detail.lower()
+    busy = any(word in lowered for word in ("locked", "busy", "pendingrollback", "connection timed out"))
+    return JSONResponse(
+        status_code=503,
+        content={
+            "code": "AH-DB-503" if busy else "AH-DB-500",
+            "message": "数据库繁忙，请稍后重试" if busy else "数据库操作失败",
+            "retryable": busy,
+            "request_id": current_request_id(),
+            "detail": detail[:200],
+        },
+        headers={"Retry-After": "2"} if busy else None,
+    )
+
+
+@app.exception_handler(SATimeoutError)
+async def pool_timeout_handler(request: Request, exc):
+    """连接池取连接超时：同样是可重试错误。"""
+    from .tracing import current_request_id
+
+    return JSONResponse(
+        status_code=503,
+        content={"code": "AH-DB-503", "message": "数据库连接池繁忙，请稍后重试",
+                 "retryable": True, "request_id": current_request_id()},
+        headers={"Retry-After": "2"},
+    )
+
+
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
-    payload = {"code": exc.code, "message": exc.message, "retryable": exc.retryable}
+    from .tracing import current_request_id
+
+    payload = {"code": exc.code, "message": exc.message, "retryable": exc.retryable,
+               "request_id": current_request_id()}
     if getattr(exc, "errors", None):
         payload["errors"] = exc.errors
     headers = getattr(exc, "headers", None) or None

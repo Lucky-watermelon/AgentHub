@@ -1,10 +1,16 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-sqlalchemy>=2.0
-pydantic>=2.7
-pydantic-settings>=2.3
-jinja2>=3.1
-httpx>=0.27
-langgraph>=0.2
-langchain-core>=0.3
-pytest>=8.0
+# 运行时依赖（版本按 2026-11-23 实测运行环境锁定）
+# 说明：此前使用 >= 下限声明，安装时可能解析到低版本（曾被误认为使用旧版 Lang 家族），
+#       改为精确锁定以保证可复现，并避免跨机器解析差异。
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.1.9
+pydantic==2.14.4
+pydantic-settings==2.16.3
+Jinja2==3.1.6
+httpx==0.28.1
+
+# Lang 家族（实测版本）
+#   langgraph 1.2.24  -> StateGraph / 编译执行
+#   langchain-core 1.8.4 -> 消息与模型适配层（当前直接走 OpenAI 兼容 HTTP，未强依赖）
+langgraph==1.2.24
+langchain-core==1.8.4

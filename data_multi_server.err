@@ -1,0 +1,104 @@
+INFO:     Uvicorn running on http://127.0.0.1:8011 (Press CTRL+C to quit)
+INFO:     Started parent process [79652]
+INFO:     Started server process [94036]
+INFO:     Waiting for application startup.
+INFO:     Started server process [91772]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1977, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\default.py", line 1192, in do_execute
+    cursor.execute(statement, parameters)
+sqlite3.OperationalError: table agent_versions already exists
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\starlette\routing.py", line 661, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+  File "C:\application\miniconda3\envs\AgentHub\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\fastapi\routing.py", line 257, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "C:\application\miniconda3\envs\AgentHub\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\fastapi\routing.py", line 257, in merged_lifespan
+    async with original_context(app) as maybe_original_state:
+  File "C:\application\miniconda3\envs\AgentHub\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\laboratory\AgentHub\agenthub\main.py", line 78, in lifespan
+    init_db()
+  File "C:\laboratory\AgentHub\agenthub\db.py", line 58, in init_db
+    Base.metadata.create_all(bind=engine)
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\schema.py", line 6766, in create_all
+    bind._run_ddl_visitor(
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 3254, in _run_ddl_visitor
+    conn._run_ddl_visitor(visitorcallable, element, **kwargs)
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 2455, in _run_ddl_visitor
+    ).traverse_single(element)
+      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\visitors.py", line 650, in traverse_single
+    return meth(obj, **kw)
+           ^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\ddl.py", line 1472, in visit_metadata
+    self.traverse_single(
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\visitors.py", line 650, in traverse_single
+    return meth(obj, **kw)
+           ^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\ddl.py", line 1515, in visit_table
+    table_create_ddl._invoke_with(self.connection)
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\ddl.py", line 337, in _invoke_with
+    return bind.execute(self)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1494, in execute
+    return meth(
+           ^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\sql\ddl.py", line 203, in _execute_on_connection
+    return connection._execute_ddl(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1603, in _execute_ddl
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1868, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1996, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 2351, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\base.py", line 1977, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\application\miniconda3\envs\AgentHub\Lib\site-packages\sqlalchemy\engine\default.py", line 1192, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) table agent_versions already exists
+[SQL: 
+CREATE TABLE agent_versions (
+	id VARCHAR(40) NOT NULL, 
+	agent_id VARCHAR(40) NOT NULL, 
+	version INTEGER NOT NULL, 
+	"trigger" VARCHAR(80) NOT NULL, 
+	gate VARCHAR(20) NOT NULL, 
+	note VARCHAR(200) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(agent_id) REFERENCES agents (id)
+)
+
+]
+(Background on this error at: https://sqlalche.me/e/21/e3q8)
+
+ERROR:    Application startup failed. Exiting.
+INFO:     Application startup complete.
+INFO:     Waiting for child process [91772]
+ERROR:    Child process [91772] failed to start, stopping the parent process.
+INFO:     Terminated child process [94036]
+INFO:     Waiting for child process [94036]
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [94036]
+INFO:     Waiting for child process [91772]
+INFO:     Stopping parent process [79652]
