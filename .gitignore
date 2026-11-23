@@ -10,9 +10,11 @@ prototype/
 data/
 reports/
 logs/
-data_bench/
-reports_bench/
+data_*/
+reports_*/
 bench_results/
+*_server.log
+*_server.err
 *.db
 *.sqlite3
 *.log
