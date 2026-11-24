@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 import uuid as _uuid
 from datetime import datetime
@@ -26,6 +28,8 @@ from .errors import ApiError, DagInvalid, NotFound
 from .models import Agent, Checkpoint, Run, RunEvent, ToolCall
 from .report import render_report, save_report
 
+logger = logging.getLogger("agenthub.runner")
+
 
 def uid(prefix: str) -> str:
     return f"{prefix}_{_uuid.uuid4().hex[:10]}"
@@ -39,17 +43,96 @@ class HitlInterrupt(Exception):
 
 
 # ---------------- 事件与检查点 ----------------
-def emit(db: Session, run_id: str, event: str, data: dict) -> None:
-    """写一条运行事件。
+class EventBuffer:
+    """一次运行内批量提交事件 / 快照 / 工具记录。
 
-    使用独立短事务：事件写入失败不会污染调用方 session（避免 PendingRollback 连锁），
-    失败时重试一次以规避 SQLite 瞬时锁冲突。
+    压测显示同步吞吐卡在"每条事件一个事务"：一次 10 节点运行约 40 次 commit。
+    改为按节点边界 flush 后，事务数降到约 12 次。
+    代价是 SSE 从逐条推送变为按节点推送（一帧内含该节点的多条事件）。
     """
-    from .tracing import current_request_id
 
-    rid = current_request_id()
-    if rid and isinstance(data, dict):
-        data = {**data, "request_id": rid}
+    def __init__(self, run_id: str, max_size: int = 12) -> None:
+        self.run_id = run_id
+        self.max_size = max_size
+        self._items: list[tuple] = []
+        self._seq = 0
+        self._lock = threading.RLock()
+
+    def add_event(self, event: str, data: dict) -> None:
+        self._push(("event", event, data))
+
+    def add_checkpoint(self, step: int, node: str, state: dict) -> None:
+        self._push(("cp", step, node, state))
+
+    def add_tool_call(self, trace_id: str, tool_name: str, params: dict,
+                      status: str, dur_ms: int, error: str) -> None:
+        self._push(("tc", trace_id, tool_name, params, status, dur_ms, error))
+
+    def _push(self, item: tuple) -> None:
+        with self._lock:
+            self._items.append(item)
+            full = len(self._items) >= self.max_size
+        if full:
+            self.flush()
+
+    def flush(self) -> None:
+        """把缓冲区内容一次事务写入；失败只丢这一批，不影响运行。"""
+        with self._lock:
+            if not self._items:
+                return
+            batch, self._items = self._items, []
+            try:
+                with SessionLocal() as s:
+                    if not self._seq:
+                        self._seq = (s.query(func.coalesce(func.max(RunEvent.seq), 0))
+                                      .filter(RunEvent.run_id == self.run_id).scalar() or 0)
+                    for item in batch:
+                        kind = item[0]
+                        if kind == "event":
+                            self._seq += 1
+                            s.add(RunEvent(id=uid("ev"), run_id=self.run_id, seq=self._seq,
+                                           event=item[1],
+                                           data=json.dumps(item[2], ensure_ascii=False, default=str)))
+                        elif kind == "cp":
+                            s.add(Checkpoint(id=uid("cp"), run_id=self.run_id, step=item[1],
+                                             node=item[2],
+                                             state_json=json.dumps(item[3], ensure_ascii=False,
+                                                                   default=str)[:20000]))
+                        else:
+                            s.add(ToolCall(id=uid("tc"), tool_name=item[2], trace_id=item[1],
+                                           run_id=self.run_id,
+                                           params=json.dumps(item[3], ensure_ascii=False,
+                                                             default=str)[:1000],
+                                           status=item[4], dur_ms=item[5], error=item[6][:200]))
+                    s.commit()
+            except Exception:
+                logger.warning("事件批量写入失败，丢弃 %s 条 run_id=%s", len(batch), self.run_id,
+                               exc_info=True)
+
+
+# 缓冲区按 run_id 注册。不用 contextvar：LangGraph 的并行分支在新线程执行，
+# 线程池不会传播 contextvars，按 run_id 查表才是线程安全的。
+_buffers: dict[str, EventBuffer] = {}
+_buffers_lock = threading.Lock()
+
+
+def _buffer_for(run_id: str) -> EventBuffer | None:
+    with _buffers_lock:
+        return _buffers.get(run_id)
+
+
+def _register_buffer(buffer: EventBuffer) -> None:
+    with _buffers_lock:
+        _buffers[buffer.run_id] = buffer
+
+
+def _drop_buffer(run_id: str) -> None:
+    with _buffers_lock:
+        _buffers.pop(run_id, None)
+
+
+def _append_event(run_id: str, event: str, data: dict) -> None:
+    """无缓冲区时的直写路径（例如请求线程里记录 api.invoked）。"""
     payload = json.dumps(data, ensure_ascii=False, default=str)
     for attempt in range(2):
         try:
@@ -65,7 +148,25 @@ def emit(db: Session, run_id: str, event: str, data: dict) -> None:
             time.sleep(0.02)
 
 
+def emit(db: Session, run_id: str, event: str, data: dict) -> None:
+    """写一条运行事件：该 run 正在执行时走批量缓冲，否则直写。"""
+    from .tracing import current_request_id
+
+    rid = current_request_id()
+    if rid and isinstance(data, dict):
+        data = {**data, "request_id": rid}
+    buffer = _buffer_for(run_id)
+    if buffer is not None:
+        buffer.add_event(event, data)
+        return
+    _append_event(run_id, event, data)
+
+
 def checkpoint(db: Session, run_id: str, step: int, node: str, state: dict) -> None:
+    buffer = _buffer_for(run_id)
+    if buffer is not None:
+        buffer.add_checkpoint(step, node, state)
+        return
     with SessionLocal() as s:
         s.add(Checkpoint(id=uid("cp"), run_id=run_id, step=step, node=node,
                          state_json=json.dumps(state, ensure_ascii=False, default=str)[:20000]))
@@ -74,6 +175,10 @@ def checkpoint(db: Session, run_id: str, step: int, node: str, state: dict) -> N
 
 def record_tool_call(db: Session, run: Run, tool_name: str, params: dict,
                      status: str, dur_ms: int, error: str = "") -> None:
+    buffer = _buffer_for(run.id)
+    if buffer is not None:
+        buffer.add_tool_call(run.trace_id, tool_name, params, status, dur_ms, error)
+        return
     with SessionLocal() as s:
         s.add(ToolCall(id=uid("tc"), tool_name=tool_name, trace_id=run.trace_id, run_id=run.id,
                        params=json.dumps(params, ensure_ascii=False, default=str)[:1000],
@@ -104,6 +209,9 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
         def finish(payload: dict) -> dict:
             if completed is not None:
                 completed.add(nid)
+            buffer = _buffer_for(run.id)
+            if buffer is not None:  # 节点边界落盘：保证 SSE 按节点推进，且崩溃时丢得少
+                buffer.flush()
             return payload
 
         if nid in skipped:  # 断点续跑：中断前已完成的节点不再重复执行
@@ -174,6 +282,8 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
         if ntype == "hitl":
             level = ((state.get("features") or {}).get("judicial") or {}).get("level", "低")
             if level == "高" and not skip_hitl:
+                # 图执行时 graph.invoke 不回写入参，中断快照必须取自节点收到的状态
+                stats["last_state"] = state
                 raise HitlInterrupt(name, f"客户命中司法高风险（{level}），需人工复核后继续")
             emit(db, run.id, "node.result", {"node": nid, "decision": "SKIP",
                                             "reason": f"风险等级 {level}",
@@ -207,6 +317,8 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
     started = time.perf_counter()
     state: dict = {}
     completed: set[str] = set()
+    buffer = EventBuffer(run_id)
+    _register_buffer(buffer)
     try:
         run = db.get(Run, run_id)
         if not run:
@@ -247,6 +359,7 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
               "thread_id": run.thread_id,
               "customer_no": run.customer_no,
               "resumed_from": sorted(completed)})
+        buffer.flush()  # 开始事件立即落盘，客户端马上能看到进度
 
         dag_raw = json.loads(agent.dag_json or "{}")
         dag, errors, warnings = validate(dag_raw)
@@ -297,8 +410,10 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
             run.status = "WAITING_APPROVAL"
             run.features_json = json.dumps({"hitl": {"point": exc.point, "detail": exc.detail}},
                                            ensure_ascii=False)
-            # 保存断点：state 快照 + 已完成节点，审批后从这里继续
-            run.state_json = json.dumps(state, ensure_ascii=False, default=str)[:200000]
+            # 保存断点：state 快照 + 已完成节点，审批后从这里继续。
+            # 图执行下入参不会被回写，优先取节点内记录的状态。
+            snapshot = stats.get("last_state") or state
+            run.state_json = json.dumps(snapshot, ensure_ascii=False, default=str)[:200000]
             run.node_progress = json.dumps({"completed": sorted(completed),
                                             "interrupted_at": stats.get("current_node", "")},
                                            ensure_ascii=False)
@@ -317,6 +432,10 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
             db.commit()
             emit(db, run.id, "run.failed", {"error": str(exc)[:400], "code": "AH-RUN-500"})
     finally:
+        try:
+            buffer.flush()  # 兜底：终态事件与残留快照落盘
+        finally:
+            _drop_buffer(run_id)
         db.close()
         try:  # Langfuse 旁路上报：关闭时零开销，失败不影响运行结果
             from .observability import report_run_async

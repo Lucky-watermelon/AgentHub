@@ -21,7 +21,7 @@ DAG JSON 结构（与前端导入格式一致）::
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
 NODE_TYPES = ("start", "end", "llm", "tool", "condition", "hitl", "subgraph")
 TYPE_LABEL = {
@@ -277,6 +277,17 @@ def structure(dag: dict) -> dict:
     }
 
 
+def _merge_state_dict(left: dict | None, right: dict | None) -> dict:
+    """并行分支同时写同一个 map 键时的合并策略（后者覆盖同名键）。"""
+    merged = dict(left or {})
+    merged.update(right or {})
+    return merged
+
+
+def _concat_state_list(left: list | None, right: list | None) -> list:
+    return list(left or []) + list(right or [])
+
+
 def compile_graph(dag: dict, node_runner: Callable[[dict, dict], dict]):
     """把 DAG 编译成 LangGraph StateGraph。节点执行委托给 node_runner。
 
@@ -292,10 +303,12 @@ def compile_graph(dag: dict, node_runner: Callable[[dict, dict], dict]):
     class RunState(TypedDict, total=False):
         customer_no: str
         payload: dict
-        features: dict
-        messages: list
+        # 并行分支（征信/财报/司法）会同时返回 features，必须声明 reducer，
+        # 否则 LangGraph 报 INVALID_CONCURRENT_GRAPH_UPDATE 并退化为顺序执行。
+        features: Annotated[dict, _merge_state_dict]
+        messages: Annotated[list, _concat_state_list]
         report_html: str
-        outputs: dict
+        outputs: Annotated[dict, _merge_state_dict]
         summary: str
         route: str
 

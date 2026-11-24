@@ -16,11 +16,16 @@ _env = Environment(
 
 
 def _pct(value, digits: int = 1) -> str:
+    """金额/比率格式化：字段缺失或类型异常时降级为「—」，不阻断报告生成。
+
+    注意 Jinja2 的 Undefined 在 float() 时抛的是 UndefinedError 而非 TypeError，
+    因此这里按 Exception 兜底。
+    """
     if value is None:
         return "—"
     try:
         return f"{float(value) * 100:.{digits}f}%"
-    except (TypeError, ValueError):
+    except Exception:
         return "—"
 
 
@@ -29,7 +34,7 @@ def _money(value) -> str:
         return "—"
     try:
         return f"{float(value):,.2f}"
-    except (TypeError, ValueError):
+    except Exception:
         return "—"
 
 
