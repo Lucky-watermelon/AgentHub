@@ -317,7 +317,7 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
     started = time.perf_counter()
     state: dict = {}
     completed: set[str] = set()
-    buffer = EventBuffer(run_id)
+    buffer = EventBuffer(run_id, max_size=max(1, settings.event_batch_size))
     _register_buffer(buffer)
     try:
         run = db.get(Run, run_id)

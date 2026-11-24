@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     run_timeout_s: int = 300
     run_workers: int = 4          # 执行器 worker 数
     run_queue_size: int = 32      # 排队上限，超出返回 AH-RUNTIME-429
+    event_batch_size: int = 12    # 事件批量提交条数；设为 1 等价逐条提交（用于对照实验）
     seed_demo: bool = True
 
     # Langfuse 旁路（可选）：关闭时零开销，不影响主链路
