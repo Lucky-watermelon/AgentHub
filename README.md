@@ -17,7 +17,7 @@ python -m agenthub
 #    http://127.0.0.1:8000/docs   OpenAPI 文档
 ```
 
-首次启动自动建库并写入示例数据：1 个智能体（9 节点客户全景分析流程）、4 个技能、
+首次启动自动建库并写入示例数据：1 个智能体（14 节点演示流程：工具 + 技能 + 知识库）、4 个技能、
 6 个内置工具、3 篇知识库口径文档、3 个 Provider 与 4 个模型别名。
 
 ## 目录结构
@@ -28,9 +28,14 @@ agenthub/
   db.py             数据库连接与会话
   models.py         ORM：智能体/技能/工具/运行/知识库/模型/凭证
   schemas.py        请求模型与序列化
-  dag.py            DAG 校验、分层布局、LangGraph 编译
-  builtin_tools.py  内置工具：征信/财报/司法解析、报告渲染、JSON、计算器
-  llm.py            模型别名解析、Provider 调用、降级链
+  dag.py            DAG 结构校验、分层布局、LangGraph 编译
+  gate.py           DAG 依赖门禁：工具 / 模型别名 / 技能是否可用
+  docs_meta.py      OpenAPI 文档增强：中文摘要 / 示例 / 鉴权 / 契约数据
+  builtin_tools.py  内置工具：征信/财报/司法解析、报告渲染、JSON、计算器、知识库检索
+  tools_runtime.py  工具运行时：内置 / HTTP / Jinja2 统一执行 + 参数 Schema 校验
+  sandbox.py        技能脚本沙箱：AST 白名单 + 独立进程 + 超时 + 输出上限
+  skill_templates.py 示例技能包：SKILL.md 与脚本
+  llm.py            模型别名解析、Provider 调用、降级链与调用统计
   kb.py             知识库切分、向量化（bigram 哈希）、检索
   report.py         HTML 全景分析报告渲染
   runner.py         运行执行器：事件流、Checkpoint、人工审批
@@ -44,16 +49,60 @@ tests/              单元测试与接口测试
 ## 核心链路
 
 ```
-POST /api/v1/runs  →  校验 DAG  →  编译 LangGraph StateGraph  →  逐节点执行
-                   →  tool 节点调用工具、llm 节点调用模型、hitl 节点判定风险
+POST /api/v1/runs  →  结构校验 + 依赖门禁  →  编译 LangGraph StateGraph  →  逐节点执行
+                   →  tool 节点调用工具、skill 节点执行技能、llm 节点调用模型、hitl 节点判定风险
                    →  聚合特征  →  渲染 HTML 报告  →  写 RunEvent / Checkpoint
 GET  /api/v1/runs/{id}/events  →  SSE 实时事件
 ```
 
-- DAG JSON 格式：`nodes`（id / type / name / next / branches / tool / model）+ 可选 `edges`
-- 校验项：id 唯一、类型合法、边端点存在、环路、可达性、孤立节点、不可达终节点
+- DAG 节点类型：`start / end / llm / tool / skill / condition / hitl`（`subgraph` 为预留类型）
+- 节点字段：`id / type / name / next / branches / params / tool / skill / model`
+- 结构校验：id 唯一、类型合法、边端点存在、环路、可达性、孤立节点、不可达终节点
+- 依赖门禁：tool 需已注册且启用；llm / skill 的模型别名需存在且 Provider 未停用；skill 需已发布
+- `tool` / `skill` 节点可通过 `params` 覆盖报文顶层字段（知识库检索用 `params.q` 传查询语句）
+- `skill` 节点依次执行：绑定的只读工具 → 沙箱脚本（`entrypoint`）→ 技能模型判读；可用 `run_tools` / `run_script` 关闭对应步骤
 - 执行优先走 LangGraph，编译或执行异常时降级为按拓扑序顺序执行
 - 高风险客户（司法命中被执行/失信）在 hitl 节点中断，状态置 `WAITING_APPROVAL`，审批后从 Checkpoint 恢复
+- 运行过程中采集工具输出、知识库切片、技能脚本与模型调用，生成「结论 → 证据」链，写入 `output.evidence`，报告与运行详情共用
+
+## 演示流程（ag_001 客户全景分析）
+
+```
+start
+  └─ 报文类型分流
+       ├─ 征信报文解析 ─┐
+       ├─ 财报指标计算 ─┼─ 技能：征信特征提取（沙箱脚本）
+       ├─ 司法风险标签 ─┘        │
+       └─ 知识库口径检索 ────────┤
+                                 ├─ 技能：财报指标测算（沙箱脚本）
+                                 ├─ 特征聚合与风险判读（LLM）
+                                 ├─ 技能：全景分析（SKILL.md 驱动 LLM）
+                                 ├─ AI 风险要点
+                                 ├─ 高风险客户人工复核（HITL）
+                                 └─ HTML 报告渲染 → end
+```
+
+- 覆盖工具调用、知识库检索、技能脚本、技能文档、模型判读、人工审批与报告渲染
+- 报告包含「技能判定」与「知识库引用（口径依据）」两个演示段落
+
+## 能力模块（技能 / 工具 / 知识库 / 模型 / 监控 / 凭证）
+
+| 模块 | 能力要点 |
+| --- | --- |
+| 技能 | 技能包 = `SKILL.md`（frontmatter + 说明书）+ scripts + 工具 + 模型别名；发布时校验内容、工具、别名与脚本 AST；DAG 的 `skill` 节点依次执行只读工具 → 沙箱脚本 → 技能模型 |
+| 工具 | 内置 / HTTP / Jinja2 三类实现统一执行；调用前按参数 Schema 校验；停用后内置工具也拒绝执行；引用计数（DAG 节点 + 技能绑定）；非内置可增删改，内置只能停用 |
+| 知识库 | 文档上传 / 编辑 / 正文查看，正文变更自动重建切片；hybrid / vector 两种检索；内置工具「知识库检索」可直接被 DAG 引用 |
+| 模型接入 | Provider 真实连通性探测（Mock 模式不出网）；Provider / 别名增删改；降级链按别名统计调用数、成功率与平均延迟 |
+| 运行观测 | 调用链路支持状态与关键字筛选、错误标记；统计支持时间范围、P50/P95、按智能体聚合；异常与审批集中处理失败/待审批运行；成本与用量按智能体、模型看 tokens 与估算费用；运行详情提供「结论与证据链」 |
+| 可解释性 | 工具 / 知识库切片 / 技能脚本 / 模型调用统一采集为 evidence，按结论句规则匹配，报告与运行详情展示引用来源，不额外调用模型 |
+| 凭证与契约 | 过期凭证在鉴权层拒绝；支持轮换与吊销；`/api/v1/system/contract` 由 OpenAPI 动态生成 |
+
+### 技能脚本沙箱
+
+- 脚本在独立 Python 子进程执行：临时工作目录、清理环境变量、超时强杀、输出截断
+- AST 白名单只放行安全标准库（`math` / `json` / `re` / `statistics` 等），禁止文件、系统、网络、进程与动态执行
+- POSIX 下额外限制地址空间与 CPU；Windows 只做进程 + 超时 + 输出控制
+- **不是安全边界**：适合演示与内部可信代码，生产执行不可信代码请换容器 / gVisor / Firecracker
 
 ## 对外调用（业务系统嵌入）
 
@@ -115,7 +164,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/invoke/ag_001 \
 - 命中（状态为 CREATED / RUNNING / WAITING_APPROVAL / COMPLETED）直接返回原 `run_id`，响应里 `idempotent_reuse=true`
 - 失败或被拒绝的运行不占用幂等键，可重试
 
-控制台「接入与凭证 → 对外调用」页可直接复制 curl / Python / Node 片段并在线试调用。
+调用方式统一以 `/docs`（Swagger）为准：
+
+- 每个接口都有中文摘要、参数说明与请求/响应示例
+- 右上角 **Authorize** 可直接填 AppKey，`Try it out` 可在线发请求
+- 控制台「对外接入 → 接口文档」支持按分组/关键词筛选；点「详情 / 测试」可看参数、复制 curl 并直接发请求
 
 ## 运行与并发
 
@@ -140,6 +193,8 @@ agenthub/migrations/
   runner.py              执行器（版本表 + 顺序应用）
   m0001_baseline.py      基线
   m0002_run_resume.py    runs: idempotency_key / state_json / node_progress
+  m0003_tool_http.py     tools: endpoint / method / headers_json
+  m0004_skill_content.py skills: content / scripts_json / entrypoint + 示例内容
 ```
 
 新增迁移：添加 `m000N_xxx.py`，暴露 `VERSION`、`DESCRIPTION`、`up(conn)`，并注册到 `runner._migration_modules()`。
@@ -161,7 +216,7 @@ PUT  /api/v1/quota/{key_id}     # 调整 rps / concurrency / daily_calls / enabl
 POST /api/v1/quota/{key_id}/reset
 ```
 
-控制台「接入与凭证 → AppKey」可直接编辑与重置。限流状态在进程内存，多副本部署需换 Redis。
+控制台「对外接入 → 调用凭证」可直接编辑与重置。限流状态在进程内存，多副本部署需换 Redis。
 
 ## 可观测性（Langfuse 旁路）
 
@@ -175,7 +230,7 @@ export AH_LANGFUSE_HOST=http://127.0.0.1:3100   # 自托管地址
 
 - 通过 Langfuse Ingestion API 上报，无额外 SDK 依赖
 - 一次运行 = 一条 trace，节点/工具为 span，模型调用为 generation
-- 开关与采样率存在数据库（控制台「运行监控 → Langfuse」可调），重启后保持
+- 开关与采样率存在数据库，可通过 `/api/v1/observability/langfuse` 调整，重启后保持
 - `POST /api/v1/observability/langfuse/test` 可验证连通性
 
 ## 配置
