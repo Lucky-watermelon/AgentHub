@@ -44,14 +44,14 @@ def test_seed_agents(client):
     rows = resp.json()
     assert len(rows) >= 1
     assert rows[0]["dag_ok"] is True
-    assert rows[0]["node_count"] == 10
+    assert rows[0]["node_count"] == len(SAMPLE_DAG["nodes"])
 
 
 def test_dag_structure(client):
     resp = client.get("/api/v1/agents/ag_001/dag")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["structure"]["nodes"]) == 10
+    assert len(data["structure"]["nodes"]) == len(SAMPLE_DAG["nodes"])
     assert data["errors"] == []
 
 
@@ -90,6 +90,15 @@ def test_run_completes_and_reports(client):
     assert len(detail["checkpoints"]) >= 5
     assert "授信使用率" in detail["output"]["summary"]
 
+    evidence = detail["output"]["evidence"]
+    assert evidence["claims"] and evidence["items"]
+    ids = {item["id"] for item in evidence["items"]}
+    assert all(set(claim["evidence"]) <= ids for claim in evidence["claims"])
+    kinds = {item["kind"] for item in evidence["items"]}
+    assert {"tool", "kb", "skill", "model"} <= kinds
+    report_html = client.get("/" + run["report_path"]).text
+    assert "结论与证据" in report_html
+
     trace = client.get(f"/api/v1/traces/{run['trace_id']}").json()
     assert len(trace["spans"]) > 3
 
@@ -108,6 +117,11 @@ def test_high_risk_needs_approval(client):
     assert approved.status_code == 200
     assert approved.json()["status"] == "COMPLETED"
     assert approved.json()["report_path"]
+
+    detail = client.get(f"/api/v1/runs/{run['id']}").json()
+    evidence = detail["output"]["evidence"]
+    assert any(item["kind"] == "hitl" for item in evidence["items"])
+    assert evidence["claims"]
 
 
 def test_kb_retrieve(client):

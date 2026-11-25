@@ -9,14 +9,14 @@ def test_sample_dag_is_valid():
     dag, errors, warnings = validate(SAMPLE_DAG)
     assert errors == []
     assert warnings == []
-    assert len(dag["nodes"]) == 10
-    assert len(dag["edges"]) == 11
+    assert len(dag["nodes"]) == len(SAMPLE_DAG["nodes"])
+    assert len(dag["edges"]) == 16
     assert dag["entry"] == "n_start"
 
 
 def test_branch_edges_are_expanded():
     dag = normalize(SAMPLE_DAG)
-    branches = [e for e in dag["edges"] if e["from"] == "n_dispatch"]
+    branches = [e for e in dag["edges"] if e["from"] == "n_dispatch" and e["label"]]
     assert len(branches) == 3
     assert {e["label"] for e in branches} == {"credit", "finance", "judicial"}
 
@@ -69,7 +69,7 @@ def test_layout_and_structure():
     assert lay["level"]["n_start"] == 0
     assert lay["level"]["n_merge"] >= 2
     st = structure(dag)
-    assert len(st["nodes"]) == 10
+    assert len(st["nodes"]) == len(SAMPLE_DAG["nodes"])
     assert all("x" in n and "y" in n for n in st["nodes"])
 
 

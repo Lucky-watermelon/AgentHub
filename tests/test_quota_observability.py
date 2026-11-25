@@ -20,8 +20,13 @@ def client():
 
 
 def _key_id(client) -> str:
+    """配额用例统一作用于本地演示凭证对应的 key。
+
+    其他用例会签发新凭证，按创建时间倒序取第一行不再稳定，因此按应用名查找。
+    """
     rows = client.get("/api/v1/quota", headers=AUTH).json()
-    return rows[0]["key_id"]
+    row = next(r for r in rows if r["app"] == "本地调试")
+    return row["key_id"]
 
 
 def _set_quota(client, key_id: str, **kw) -> dict:
