@@ -23,9 +23,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Callable
 
-NODE_TYPES = ("start", "end", "llm", "tool", "condition", "hitl", "subgraph")
+NODE_TYPES = ("start", "end", "llm", "tool", "skill", "condition", "hitl", "subgraph")
 TYPE_LABEL = {
-    "start": "开始", "end": "结束", "llm": "LLM", "tool": "工具",
+    "start": "开始", "end": "结束", "llm": "LLM", "tool": "工具", "skill": "技能",
     "condition": "条件分支", "hitl": "人工审批", "subgraph": "子图",
 }
 
@@ -258,6 +258,7 @@ def structure(dag: dict) -> dict:
         p = lay["pos"].get(nid, {"x": PAD, "y": PAD})
         meta = (
             n.get("tool") if n.get("type") == "tool"
+            else n.get("skill") if n.get("type") == "skill"
             else n.get("model") if n.get("type") == "llm"
             else f"{len(n.get('branches') or [])} 条分支" if n.get("type") == "condition"
             else "WAITING_APPROVAL" if n.get("type") == "hitl"
@@ -267,7 +268,7 @@ def structure(dag: dict) -> dict:
             "id": nid, "type": n.get("type") or "tool", "name": n.get("name") or nid,
             "meta": meta, "x": p["x"], "y": p["y"],
             "level": lay["level"].get(nid, 0),
-            "tool": n.get("tool"), "model": n.get("model"),
+            "tool": n.get("tool"), "model": n.get("model"), "skill": n.get("skill"),
         })
     return {
         "name": dag["name"], "version": dag["version"], "entry": dag["entry"],

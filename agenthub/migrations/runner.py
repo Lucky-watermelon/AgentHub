@@ -19,9 +19,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 def _migration_modules():
-    from . import m0001_baseline, m0002_run_resume
+    from . import (m0001_baseline, m0002_run_resume, m0003_tool_http,
+                   m0004_skill_content, m0005_demo_dag)
 
-    return [m0001_baseline, m0002_run_resume]
+    return [m0001_baseline, m0002_run_resume, m0003_tool_http,
+            m0004_skill_content, m0005_demo_dag]
 
 
 MIGRATIONS = _migration_modules()

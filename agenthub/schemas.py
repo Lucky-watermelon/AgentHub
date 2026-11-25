@@ -1,10 +1,12 @@
 """请求模型与序列化工具。响应体统一用 dict，序列化集中在这里。"""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from . import builtin_tools
 from .models import (
     Agent,
     AgentVersion,
@@ -51,18 +53,33 @@ class SkillCreate(BaseModel):
     prompt: str = ""
     model: str = "default-chat"
     tools: list[str] = []
+    content: str = ""
+    scripts: list[dict[str, Any]] = []
+    entrypoint: str = ""
     timeout_s: int = 30
     retry: int = 1
     description: str = ""
 
 
 class SkillUpdate(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    status: str | None = None
     prompt: str | None = None
     model: str | None = None
     tools: list[str] | None = None
+    content: str | None = None
+    scripts: list[dict[str, Any]] | None = None
+    entrypoint: str | None = None
     timeout_s: int | None = None
     retry: int | None = None
     description: str | None = None
+
+
+class SandboxRun(BaseModel):
+    input: dict[str, Any] = {}
+    script: str = ""
+    timeout_s: int = 5
 
 
 class ToolCreate(BaseModel):
@@ -73,6 +90,23 @@ class ToolCreate(BaseModel):
     timeout_s: int = 10
     idempotency: bool = False
     params_schema: str = "{}"
+    endpoint: str = ""
+    method: str = "POST"
+    headers: str = "{}"
+
+
+class ToolUpdate(BaseModel):
+    name: str | None = None
+    source: str | None = None
+    impl: str | None = None
+    permission: str | None = None
+    timeout_s: int | None = None
+    idempotency: bool | None = None
+    params_schema: str | None = None
+    endpoint: str | None = None
+    method: str | None = None
+    headers: str | None = None
+    status: str | None = None
 
 
 class ToolInvoke(BaseModel):
@@ -86,9 +120,17 @@ class KbDocCreate(BaseModel):
     content: str = ""
 
 
+class KbDocUpdate(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+    note: str | None = None
+    content: str | None = None
+
+
 class RetrieveRequest(BaseModel):
     q: str = Field(min_length=1)
     top_k: int = 4
+    mode: str = "hybrid"  # hybrid / vector
 
 
 class ProviderCreate(BaseModel):
@@ -193,10 +235,16 @@ def agent_version_out(v: AgentVersion) -> dict:
 def skill_out(s: Skill, tools: list[str] | None = None) -> dict:
     import json
 
+    try:
+        scripts = json.loads(s.scripts_json or "[]")
+    except json.JSONDecodeError:
+        scripts = []
     return {
         "id": s.id, "name": s.name, "category": s.category, "version": s.version,
         "status": s.status, "prompt": s.prompt, "model": s.model,
         "tools": tools if tools is not None else json.loads(s.tools_json or "[]"),
+        "content": s.content or "", "scripts": scripts if isinstance(scripts, list) else [],
+        "entrypoint": s.entrypoint or "",
         "timeout_s": s.timeout_s, "retry": s.retry, "refs": s.refs,
         "description": s.description, "updated_at": dt(s.updated_at),
     }
@@ -210,7 +258,10 @@ def skill_version_out(v: SkillVersion) -> dict:
 def tool_out(t: Tool) -> dict:
     return {"id": t.id, "name": t.name, "source": t.source, "impl": t.impl,
             "permission": t.permission, "timeout_s": t.timeout_s, "idempotency": t.idempotency,
-            "status": t.status, "schema": t.schema_json, "refs": t.refs}
+            "status": t.status, "schema": t.schema_json, "refs": t.refs,
+            "endpoint": t.endpoint or "", "method": t.method or "POST",
+            "headers": t.headers_json or "{}",
+            "builtin": t.name in builtin_tools.TOOL_REGISTRY}
 
 
 def tool_call_out(c: ToolCall) -> dict:
@@ -246,7 +297,7 @@ def checkpoint_out(c: Checkpoint) -> dict:
 
 def kb_doc_out(d: KbDoc) -> dict:
     return {"id": d.id, "name": d.name, "kind": d.kind, "status": d.status,
-            "chunks": d.chunks, "note": d.note,
+            "chunks": d.chunks, "note": d.note, "chars": len(d.content or ""),
             "updated": dt(d.updated_at), "created": dt(d.created_at)}
 
 
@@ -266,5 +317,12 @@ def alias_out(a: Alias) -> dict:
 
 
 def key_out(k: AppKey) -> dict:
+    expired = False
+    if k.expires_at:
+        try:
+            expired = date.fromisoformat(k.expires_at[:10]) < date.today()
+        except ValueError:
+            expired = False
     return {"id": k.id, "app": k.app, "type": k.type, "prefix": k.prefix,
-            "status": k.status, "created": dt(k.created_at), "expires": k.expires_at}
+            "status": k.status, "created": dt(k.created_at), "expires": k.expires_at,
+            "expired": expired}

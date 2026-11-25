@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import httpx
 from sqlalchemy.orm import Session
@@ -13,6 +15,43 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .errors import ModelUnavailable
 from .models import Alias, Provider, Setting
+
+# 进程内调用统计：按别名累计调用数、成功率、平均延迟与最近错误。
+# 多副本部署时不共享，仅用于控制台「降级链」页的即时观测。
+_stats: dict[str, dict] = {}
+_stats_lock = threading.Lock()
+
+
+def _record(alias: str, ok: bool, dur_ms: int, degraded: bool = False, error: str = "") -> None:
+    with _stats_lock:
+        item = _stats.setdefault(alias, {"calls": 0, "ok": 0, "fail": 0, "degraded": 0,
+                                         "total_ms": 0, "last_error": "", "last_at": ""})
+        item["calls"] += 1
+        item["total_ms"] += max(0, dur_ms)
+        if ok:
+            item["ok"] += 1
+            if degraded:
+                item["degraded"] += 1
+        else:
+            item["fail"] += 1
+            item["last_error"] = error[:200]
+        item["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def stats() -> list[dict]:
+    with _stats_lock:
+        rows = []
+        for alias, item in _stats.items():
+            calls = item["calls"] or 1
+            rows.append({
+                "alias": alias, "calls": item["calls"], "ok": item["ok"], "fail": item["fail"],
+                "degraded": item["degraded"],
+                "success_rate": round(item["ok"] / calls, 4),
+                "avg_ms": int(item["total_ms"] / calls),
+                "last_error": item["last_error"], "last_at": item["last_at"],
+            })
+    rows.sort(key=lambda r: r["calls"], reverse=True)
+    return rows
 
 
 def get_chain(db: Session) -> list[str]:
@@ -107,22 +146,30 @@ def complete(db: Session, prompt: str, alias_name: str | None = None,
     errors: list[str] = []
 
     for name in names:
+        started = time.perf_counter()
         alias, provider = resolve(db, name)
         if not alias or not provider:
             errors.append(f"{name}: 别名或 Provider 不存在")
+            _record(name, False, 0, error="别名或 Provider 不存在")
             continue
         if provider.status == "stopped":
             errors.append(f"{name}: Provider {provider.name} 未启用")
+            _record(name, False, 0, error=f"Provider {provider.name} 未启用")
             continue
         if settings.llm_mock or provider.kind == "规则" or not provider.base_url:
             text = _mock_text(prompt, context)
+            degraded = provider.kind == "规则"
+            _record(name, True, int((time.perf_counter() - started) * 1000), degraded=degraded)
             return {"text": text, "tokens": max(1, len(prompt) // 3 + len(text) // 3),
                     "provider": provider.name, "model": alias.model,
                     "alias": alias.alias, "cached_tokens": 0,
-                    "degraded": provider.kind == "规则"}
+                    "degraded": degraded}
         try:
-            return _remote(provider, alias, prompt, extra=extra)
+            result = _remote(provider, alias, prompt, extra=extra)
+            _record(name, True, int((time.perf_counter() - started) * 1000))
+            return result
         except Exception as exc:  # 网络/协议异常都进入下一级
             errors.append(f"{name}: {exc}")
+            _record(name, False, int((time.perf_counter() - started) * 1000), error=str(exc))
 
     raise ModelUnavailable("；".join(errors) or "降级链为空")

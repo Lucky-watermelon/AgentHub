@@ -11,13 +11,13 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 
-from . import builtin_tools
+from . import builtin_tools, skill_templates
 from .kb import index_document
 from .models import Agent, AgentVersion, Alias, AppKey, KbDoc, Provider, Setting, Skill, SkillVersion, Tool
 
 SAMPLE_DAG = {
     "name": "客户全景分析流程",
-    "version": "v1",
+    "version": "v2",
     "state_schema": {"features": "dict", "report_html": "str"},
     "entry": "n_start",
     "nodes": [
@@ -25,15 +25,27 @@ SAMPLE_DAG = {
         {"id": "n_dispatch", "type": "condition", "name": "报文类型分流", "branches": [
             {"when": "credit", "to": "n_credit"},
             {"when": "finance", "to": "n_finance"},
-            {"when": "judicial", "to": "n_judicial"}]},
+            {"when": "judicial", "to": "n_judicial"}], "next": ["n_kb"]},
         {"id": "n_credit", "type": "tool", "name": "征信报文解析", "tool": "征信报文解析",
-         "timeout": 8, "next": ["n_merge"]},
+         "timeout": 8, "next": ["n_skill_credit"]},
         {"id": "n_finance", "type": "tool", "name": "财报指标计算", "tool": "财报指标计算",
-         "timeout": 10, "next": ["n_merge"]},
+         "timeout": 10, "next": ["n_skill_credit"]},
         {"id": "n_judicial", "type": "tool", "name": "司法风险标签", "tool": "司法风险标签",
-         "timeout": 6, "next": ["n_merge"]},
+         "timeout": 6, "next": ["n_skill_credit"]},
+        {"id": "n_kb", "type": "tool", "name": "知识库口径检索", "tool": "知识库检索",
+         "params": {"q": "风险分类口径 授信使用率 逾期 高杠杆", "top_k": 3},
+         "timeout": 8, "next": ["n_skill_credit"]},
+        {"id": "n_skill_credit", "type": "skill", "name": "技能：征信特征提取",
+         "skill": "征信特征提取", "model": "default-chat", "run_tools": False,
+         "run_script": True, "timeout": 30, "next": ["n_skill_finance"]},
+        {"id": "n_skill_finance", "type": "skill", "name": "技能：财报指标测算",
+         "skill": "财报指标测算", "model": "default-chat-lite", "run_tools": False,
+         "run_script": True, "timeout": 25, "next": ["n_merge"]},
         {"id": "n_merge", "type": "llm", "name": "特征聚合与风险判读", "model": "default-chat",
-         "timeout": 60, "next": ["n_ai"]},
+         "timeout": 60, "next": ["n_skill_panorama"]},
+        {"id": "n_skill_panorama", "type": "skill", "name": "技能：全景分析",
+         "skill": "客户全景分析技能", "model": "default-chat", "run_tools": False,
+         "run_script": False, "timeout": 60, "next": ["n_ai"]},
         {"id": "n_ai", "type": "tool", "name": "AI 风险要点", "tool": "AI 风险要点",
          "model": "default-chat", "timeout": 45, "next": ["n_hitl"]},
         {"id": "n_hitl", "type": "hitl", "name": "高风险客户人工复核", "next": ["n_report"]},
@@ -60,7 +72,43 @@ KB_DOCS = [
 ]
 
 
+BUILTIN_META = {
+    "征信报文解析": ("内置", "Python", "read", 8),
+    "财报指标计算": ("内置", "Python", "read", 10),
+    "司法风险标签": ("内置", "Python", "read", 6),
+    "AI 风险要点": ("内置", "LLM", "read", 45),
+    "HTML 报告渲染": ("内置", "Jinja2", "fs:write", 20),
+    "JSON 提取器": ("内置", "Python", "read", 3),
+    "计算器": ("内置", "Python", "read", 3),
+    "知识库检索": ("内置", "Python", "read", 5),
+}
+
+
 logger = logging.getLogger("agenthub.seed")
+
+
+def sync_builtin_tools(db: Session) -> int:
+    """确保内置工具在 tools 表有登记。
+
+    旧库新增内置工具（例如「知识库检索」）时不会重新 seed，
+    因此每次启动都做一次幂等补齐，保证依赖校验与工具清单一致。
+    """
+    added = 0
+    for name in builtin_tools.names():
+        source, impl, perm, timeout = BUILTIN_META.get(name, ("内置", "Python", "read", 10))
+        tool = db.query(Tool).filter(Tool.name == name).first()
+        if tool:
+            if tool.schema_json in ("", "{}"):
+                tool.schema_json = json.dumps(builtin_tools.schema_for(name), ensure_ascii=False)
+            continue
+        db.add(Tool(id=f"tool_{abs(hash(name)) % 100000}", name=name, source=source, impl=impl,
+                    permission=perm, timeout_s=timeout, status="启用",
+                    schema_json=json.dumps(builtin_tools.schema_for(name), ensure_ascii=False),
+                    refs=0))
+        added += 1
+    if added:
+        db.commit()
+    return added
 
 
 def seed_once(db: Session) -> bool:
@@ -111,24 +159,11 @@ def seed_all(db: Session) -> None:
         )
         db.add(agent)
         db.add(AgentVersion(id="av_001", agent_id="ag_001", version=1,
-                            trigger="初始版本", gate="PASS", note="示例 DAG：9 个节点"))
+                            trigger="初始版本", gate="PASS",
+                            note=f"示例 DAG：{len(SAMPLE_DAG['nodes'])} 个节点"))
 
     if db.query(Tool).count() == 0:
-        builtin_meta = {
-            "征信报文解析": ("内置", "Python", "read", 8),
-            "财报指标计算": ("内置", "Python", "read", 10),
-            "司法风险标签": ("内置", "Python", "read", 6),
-            "AI 风险要点": ("内置", "LLM", "read", 45),
-            "HTML 报告渲染": ("内置", "Jinja2", "fs:write", 20),
-            "JSON 提取器": ("内置", "Python", "read", 3),
-            "计算器": ("内置", "Python", "read", 3),
-        }
-        for name in builtin_tools.names():
-            source, impl, perm, timeout = builtin_meta.get(name, ("内置", "Python", "read", 10))
-            db.add(Tool(id=f"tool_{abs(hash(name)) % 100000}", name=name, source=source, impl=impl,
-                        permission=perm, timeout_s=timeout, status="启用",
-                        schema_json=json.dumps({"type": "object", "properties": {}}, ensure_ascii=False),
-                        refs=1))
+        sync_builtin_tools(db)
         db.add(Tool(id="tool_fs", name="文件系统", source="MCP", impl="stdio", permission="fs:read",
                     timeout_s=15, status="启用", schema_json="{}", refs=1))
         db.add(Tool(id="tool_crm", name="客户主数据查询", source="自定义", impl="HTTP",
@@ -142,18 +177,30 @@ def seed_all(db: Session) -> None:
                   prompt="panorama-report@v1", model="default-chat",
                   tools_json=json.dumps(["征信报文解析", "财报指标计算", "司法风险标签", "HTML 报告渲染"],
                                         ensure_ascii=False),
+                  content=skill_templates.content_for("sk_01"),
+                  scripts_json=skill_templates.scripts_json("sk_01"),
+                  entrypoint=skill_templates.entrypoint_for("sk_01"),
                   timeout_s=90, retry=2, refs=1, description="三类报文解析 + 特征聚合 + 报告渲染"),
             Skill(id="sk_02", name="征信特征提取", category="业务", version=1, status="published",
                   prompt="credit-features@v1", model="default-chat",
                   tools_json=json.dumps(["征信报文解析", "JSON 提取器"], ensure_ascii=False),
+                  content=skill_templates.content_for("sk_02"),
+                  scripts_json=skill_templates.scripts_json("sk_02"),
+                  entrypoint=skill_templates.entrypoint_for("sk_02"),
                   timeout_s=30, retry=1, refs=1, description="授信使用率 / 逾期 / 查询频次口径"),
             Skill(id="sk_03", name="财报指标测算", category="业务", version=1, status="published",
                   prompt="finance-metrics@v1", model="default-chat-lite",
                   tools_json=json.dumps(["财报指标计算", "计算器"], ensure_ascii=False),
+                  content=skill_templates.content_for("sk_03"),
+                  scripts_json=skill_templates.scripts_json("sk_03"),
+                  entrypoint=skill_templates.entrypoint_for("sk_03"),
                   timeout_s=25, retry=1, refs=1, description="盈利 / 偿债 / 营运指标计算"),
             Skill(id="sk_04", name="单客户快速体检", category="实验", version=1, status="draft",
                   prompt="quick-check@v1", model="default-chat-lite",
                   tools_json=json.dumps(["JSON 提取器", "计算器"], ensure_ascii=False),
+                  content=skill_templates.content_for("sk_04"),
+                  scripts_json=skill_templates.scripts_json("sk_04"),
+                  entrypoint=skill_templates.entrypoint_for("sk_04"),
                   timeout_s=15, retry=1, refs=0, description="只取关键字段，快速出摘要"),
         ]
         db.add_all(skills)

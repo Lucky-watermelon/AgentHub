@@ -28,6 +28,12 @@
   .tag.err{background:#fdeded;color:var(--err)}
   .tag.warn{background:#fff5e3;color:var(--warn)}
   .tag.ok{background:#e8f7f0;color:var(--ok)}
+  .evidence{margin-top:12px}
+  .claim{border-left:3px solid var(--primary);padding:2px 0 2px 12px;margin:14px 0}
+  .claim-t{font-weight:600}
+  .ev{margin-top:8px;padding:8px 10px;background:#fafbfe;border:1px solid var(--line);border-radius:8px}
+  .ev b{font-weight:600}
+  .ev-d{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.7}
   footer{margin-top:32px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:11.5px}
   @media print{body{background:#fff;padding:0}.sheet{border:none;box-shadow:none}}
 </style>
@@ -47,6 +53,27 @@
     {% endif %}
   </div>
 
+  {% if evidence and evidence.claims %}
+  <h2>结论与证据</h2>
+  <div class="evidence">
+    {% for c in evidence.claims %}
+    <div class="claim">
+      <div class="claim-t">{{ loop.index }}. {{ c.text }}</div>
+      {% for eid in c.evidence %}
+        {% set e = evidence_map.get(eid) %}
+        {% if e %}
+        <div class="ev">
+          <span class="tag">{{ e.kind_label or e.kind }}</span>
+          <b>{{ e.title }}</b>{% if e.node %} <span class="meta">· {{ e.node }}</span>{% endif %}
+          <div class="ev-d">{{ e.detail }}</div>
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div class="kpis">
     <div class="kpi"><div class="l">授信使用率</div><div class="v">{{ pct(credit.usage_rate) }}</div></div>
     <div class="kpi"><div class="l">30 天以上逾期</div><div class="v">{{ credit.overdue_30d or 0 }} 次</div></div>
@@ -60,6 +87,14 @@
     <tr><th>授信总额 / 已用额度</th><td>{{ money(credit.total_limit) }} / {{ money(credit.used_limit) }}</td></tr>
     <tr><th>授信使用率</th><td>{{ pct(credit.usage_rate) }}</td></tr>
     <tr><th>30 天以上逾期</th><td>{{ credit.overdue_30d or 0 }} 次</td></tr>
+    <tr><th>技能判定</th>
+      <td>
+        {% if credit.risk_band %}
+        <span class="tag {{ 'err' if credit.risk_band == '高风险' else 'warn' if credit.risk_band == '关注' else 'ok' }}">{{ credit.risk_band }}</span>
+        {% endif %}
+        {{ (credit.script_reasons or [])|join("、") or "—" }}
+      </td>
+    </tr>
     <tr><th>近 3 个月查询次数</th><td>{{ credit.query_3m or 0 }} 次</td></tr>
   </table>
 
@@ -86,6 +121,19 @@
     </tr>
     <tr><th>风险等级</th><td>{{ judicial.level or "低" }}</td></tr>
   </table>
+
+  {% if kb and kb.rows %}
+  <h2>附：知识库引用（口径依据）</h2>
+  <div class="meta" style="margin-bottom:6px">检索语句：{{ kb.q or "—" }} ｜ 模式：{{ kb.mode or "hybrid" }}</div>
+  <table>
+    {% for r in kb.rows %}
+    <tr>
+      <th>{{ r.doc_name or r.doc }} #{{ r.idx }}</th>
+      <td>{{ r.text }}<div class="meta">score {{ r.score }} ｜ vec {{ r.vec }} ｜ hit {{ r.hit }}</div></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
 
   {% if ai and ai.points %}
   <h2>四、AI 解读</h2>

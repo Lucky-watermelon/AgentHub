@@ -70,26 +70,34 @@ def index_document(db: Session, doc: KbDoc, size: int = 500) -> int:
     return len(chunks)
 
 
-def retrieve(db: Session, query: str, top_k: int = 4) -> list[dict]:
+def retrieve(db: Session, query: str, top_k: int = 4, mode: str = "hybrid") -> list[dict]:
+    """检索切片。
+
+    ``mode=hybrid``（默认）向量相似度 0.6 + 关键词命中率 0.4；
+    ``mode=vector`` 只用向量相似度排序，便于对照两种召回效果。
+    """
     q = (query or "").strip()
     if not q:
         return []
+    mode = "vector" if str(mode).lower() == "vector" else "hybrid"
     qvec = vectorize(q)
     terms = [t for t in re.split(r"[\s,，、；;]+", q) if t]
     rows = db.query(KbChunk).all()
+    doc_names = {d.id: d.name for d in db.query(KbDoc).all()}
     scored: list[dict] = []
     for row in rows:
         vec = json.loads(row.vector_json or "[]")
         sim = cosine(qvec, vec)
         hit = sum(1 for t in terms if t in row.text) / max(1, len(terms))
-        score = 0.6 * sim + 0.4 * hit
+        score = sim if mode == "vector" else 0.6 * sim + 0.4 * hit
         scored.append({"row": row, "score": score, "sim": sim, "hit": hit})
     scored.sort(key=lambda x: x["score"], reverse=True)
     out = []
     for item in scored[:max(1, top_k)]:
         row = item["row"]
         out.append({
-            "id": row.id, "doc": row.doc_id, "idx": row.idx, "text": row.text,
+            "id": row.id, "doc": row.doc_id, "doc_name": doc_names.get(row.doc_id, row.doc_id),
+            "idx": row.idx, "text": row.text,
             "score": round(item["score"], 4),
             "vec": round(item["sim"], 4),
             "hit": round(item["hit"], 4),

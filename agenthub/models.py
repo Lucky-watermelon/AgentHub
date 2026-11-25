@@ -49,6 +49,9 @@ class Skill(Base):
     prompt: Mapped[str] = mapped_column(String(200), default="")
     model: Mapped[str] = mapped_column(String(60), default="default-chat")
     tools_json: Mapped[str] = mapped_column(Text, default="[]")
+    content: Mapped[str] = mapped_column(Text, default="")          # SKILL.md 全文
+    scripts_json: Mapped[str] = mapped_column(Text, default="[]")   # [{name, language, code}]
+    entrypoint: Mapped[str] = mapped_column(String(120), default="")
     timeout_s: Mapped[int] = mapped_column(Integer, default=30)
     retry: Mapped[int] = mapped_column(Integer, default=1)
     refs: Mapped[int] = mapped_column(Integer, default=0)
@@ -81,6 +84,9 @@ class Tool(Base):
     idempotency: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="启用")
     schema_json: Mapped[str] = mapped_column(Text, default="{}")
+    endpoint: Mapped[str] = mapped_column(String(500), default="")   # HTTP 工具地址 / Jinja2 模板
+    method: Mapped[str] = mapped_column(String(10), default="POST")  # HTTP 方法
+    headers_json: Mapped[str] = mapped_column(Text, default="{}")    # 自定义请求头
     refs: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

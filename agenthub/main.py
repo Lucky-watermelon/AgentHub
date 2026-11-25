@@ -19,8 +19,9 @@ from .api import compat_router, router as api_router
 from .auth import authenticate, extract_token
 from .config import settings
 from .db import SessionLocal, init_db
+from .docs_meta import APP_DESCRIPTION, TAGS, install as install_openapi_docs
 from .errors import ApiError
-from .seed import seed_once
+from .seed import seed_once, sync_builtin_tools
 
 logger = logging.getLogger("agenthub")
 
@@ -77,12 +78,14 @@ async def lifespan(app: FastAPI):
     _configure_logging()
     init_db()
     ensure_started()
-    if settings.seed_demo:
-        db = SessionLocal()
-        try:
+    db = SessionLocal()
+    try:
+        if settings.seed_demo:
             seed_once(db)
-        finally:
-            db.close()
+        # 内置工具随版本增加时对旧库做幂等补齐（依赖校验需要 tools 表登记）
+        sync_builtin_tools(db)
+    finally:
+        db.close()
     recovered = recover_stale_runs()
     logger.info("AgentHub 启动完成 profile=%s data=%s recovered_runs=%s",
                 settings.profile, settings.data_path, recovered,
@@ -97,9 +100,36 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AgentHub",
     version=__version__,
-    description="企业级智能体开发与运行支撑平台（裁剪版实现）：模型接入 / 智能体编排 / 工具调用 / 知识库集成 / 运行监控",
+    description=APP_DESCRIPTION,
+    openapi_tags=TAGS,
+    docs_url=None,
+    swagger_ui_parameters={
+        "persistAuthorization": True,
+        "displayRequestDuration": True,
+        "filter": True,
+        "tryItOutEnabled": True,
+        "docExpansion": "list",
+    },
     lifespan=lifespan,
 )
+install_openapi_docs(app)
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui():
+    """自定义 Swagger 页面：注入样式，收紧默认的 50px 上下留白。"""
+    from fastapi.openapi.docs import get_swagger_ui_html
+    from fastapi.responses import HTMLResponse
+
+    html = get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " · API 文档",
+        swagger_ui_parameters=app.swagger_ui_parameters,
+    )
+    body = html.body.decode("utf-8") if isinstance(html.body, bytes) else str(html.body)
+    return HTMLResponse(body.replace(
+        "</head>", '<link rel="stylesheet" href="/assets/swagger-docs.css"></head>'
+    ))
 
 app.add_middleware(
     CORSMiddleware,

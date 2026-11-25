@@ -16,6 +16,28 @@ from . import llm
 
 TOOL_REGISTRY: dict[str, Callable[[dict, dict], dict]] = {}
 
+# 内置工具的参数 Schema：控制台展示与调用前校验共用。
+# 只声明常用字段，未声明的字段仍然允许传入（保持 DAG 报文透传的宽松口径）。
+TOOL_SCHEMAS: dict[str, dict] = {
+    "征信报文解析": {"type": "object", "properties": {"credit": {"type": "object"}}},
+    "财报指标计算": {"type": "object", "properties": {"finance": {"type": "object"}}},
+    "司法风险标签": {"type": "object", "properties": {"judicial": {"type": "object"}}},
+    "JSON 提取器": {"type": "object", "required": ["paths"],
+                 "properties": {"paths": {"type": "array", "items": {"type": "string"}}}},
+    "计算器": {"type": "object", "required": ["expr"],
+             "properties": {"expr": {"type": "string"}}},
+    "AI 风险要点": {"type": "object", "properties": {"raw_text": {"type": "string"}}},
+    "HTML 报告渲染": {"type": "object", "properties": {}},
+    "知识库检索": {
+        "type": "object", "required": ["q"],
+        "properties": {
+            "q": {"type": "string"},
+            "top_k": {"type": "integer"},
+            "mode": {"type": "string", "enum": ["hybrid", "vector"]},
+        },
+    },
+}
+
 
 def register(name: str):
     def deco(fn):
@@ -202,17 +224,43 @@ def ai_risk_points(payload: dict, ctx: dict) -> dict:
                                     "model": "unavailable", "error": str(exc)[:120]}}}
 
 
+@register("知识库检索")
+def retrieve_kb(payload: dict, ctx: dict) -> dict:
+    """按查询语句检索知识库切片，返回命中片段、文档名与分数。"""
+    query = str(payload.get("q") or payload.get("query") or "").strip()
+    if not query:
+        raise ValueError("缺少查询语句：q")
+    try:
+        top_k = max(1, min(10, int(payload.get("top_k") or 3)))
+    except (TypeError, ValueError):
+        top_k = 3
+    mode = "vector" if str(payload.get("mode") or "").lower() == "vector" else "hybrid"
+    db = ctx.get("db")
+    if db is None:
+        return {"features": {"kb": {"q": query, "mode": mode, "rows": [],
+                                    "error": "缺少数据库会话，无法检索"}}}
+    from .kb import retrieve
+
+    rows = retrieve(db, query, top_k, mode=mode)
+    return {"features": {"kb": {"q": query, "mode": mode, "top_k": top_k, "rows": rows}}}
+
+
 @register("HTML 报告渲染")
 def render_report_tool(payload: dict, ctx: dict) -> dict:
     """在 DAG 中作为报告节点：把已聚合的特征渲染成 HTML。"""
+    from .evidence import build_evidence
     from .report import render_report
 
     features = ctx.get("features") or {}
+    summary = ctx.get("summary", "")
+    evidence = ctx.get("evidence") or build_evidence(
+        features, summary, ctx.get("evidence_items") or [])
     html = render_report(
         customer_no=ctx.get("customer_no", ""),
         payload=payload,
         features=features,
-        summary=ctx.get("summary", ""),
+        summary=summary,
+        evidence=evidence,
     )
     return {"report_html": html}
 
@@ -232,3 +280,8 @@ def describe(name: str) -> dict:
     fn = TOOL_REGISTRY.get(name)
     doc = (fn.__doc__ or "").strip().splitlines()
     return {"name": name, "description": doc[0] if doc else "", "builtin": fn is not None}
+
+
+def schema_for(name: str) -> dict:
+    """内置工具的参数 Schema；未登记时返回空对象（允许任意参数）。"""
+    return TOOL_SCHEMAS.get(name) or {"type": "object", "properties": {}}

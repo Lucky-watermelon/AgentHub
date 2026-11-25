@@ -38,12 +38,17 @@ def _money(value) -> str:
         return "—"
 
 
-def render_report(customer_no: str, payload: dict, features: dict, summary: str = "") -> str:
+def render_report(customer_no: str, payload: dict, features: dict, summary: str = "",
+                  evidence: dict | None = None) -> str:
     tpl = _env.get_template("report.html")
     credit = features.get("credit") or {}
     finance = features.get("finance") or {}
     judicial = features.get("judicial") or {}
-    flags = (credit.get("risk_flags") or []) + (finance.get("risk_flags") or [])
+    flags = list(dict.fromkeys(
+        (credit.get("risk_flags") or []) + (finance.get("risk_flags") or [])
+        + (credit.get("script_reasons") or []) + (finance.get("script_flags") or [])))
+    evidence = evidence or {}
+    evidence_map = {item.get("id"): item for item in (evidence.get("items") or [])}
     return tpl.render(
         customer_no=customer_no or "—",
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -52,6 +57,9 @@ def render_report(customer_no: str, payload: dict, features: dict, summary: str 
         finance=finance,
         judicial=judicial,
         ai=features.get("ai") or {},
+        kb=features.get("kb") or {},
+        evidence=evidence,
+        evidence_map=evidence_map,
         flags=flags,
         payload=payload,
         pct=_pct,

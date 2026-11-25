@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
@@ -42,6 +43,13 @@ def authenticate(db: Session, token: str) -> AppKey:
         raise AuthRequired("凭证无效")
     if key.status != "启用":
         raise AuthRequired(f"凭证已{key.status}")
+    if key.expires_at:
+        try:
+            expired = date.fromisoformat(key.expires_at[:10]) < date.today()
+        except ValueError:
+            expired = False
+        if expired:
+            raise AuthRequired(f"凭证已于 {key.expires_at} 过期")
     return key
 
 

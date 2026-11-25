@@ -12,9 +12,9 @@ from .. import __version__, builtin_tools
 from ..config import settings
 from ..db import get_db
 from ..errors import NotFound
-from ..models import AppKey, Run, ToolCall
+from ..models import AppKey, QuotaUsage, Run, ToolCall
 from ..runner import uid
-from ..schemas import KeyCreate, key_out
+from ..schemas import KeyCreate, dt, key_out
 
 router = APIRouter()
 
@@ -23,15 +23,33 @@ def _digest(plain: str) -> str:
     return hashlib.sha256(plain.encode("utf-8")).hexdigest()
 
 
+def _new_plain(key_type: str) -> str:
+    prefix = "ah_live_" if key_type == "AppKey" else "ah_pat_"
+    return prefix + secrets.token_hex(12)
+
+
 @router.get("/keys")
 def list_keys(db: Session = Depends(get_db)):
-    return [key_out(k) for k in db.query(AppKey).order_by(AppKey.created_at.desc()).all()]
+    """凭证清单：附带最近使用时间（取配额用量表的最后更新时间）。"""
+    usage_rows = (db.query(QuotaUsage.app_key_id, QuotaUsage.updated_at,
+                           QuotaUsage.calls, QuotaUsage.blocks)
+                    .order_by(QuotaUsage.updated_at.desc()).all())
+    last_used: dict[str, str] = {}
+    for key_id, ts, calls, blocks in usage_rows:
+        # 仅打开控制台也会创建用量行，只有真正发生调用 / 拦截才算「最近使用」
+        if calls or blocks:
+            last_used.setdefault(key_id, dt(ts) or "")
+    out = []
+    for key in db.query(AppKey).order_by(AppKey.created_at.desc()).all():
+        item = key_out(key)
+        item["last_used"] = last_used.get(key.id, "")
+        out.append(item)
+    return out
 
 
 @router.post("/keys", status_code=201)
 def create_key(body: KeyCreate, db: Session = Depends(get_db)):
-    prefix = "ah_live_" if body.type == "AppKey" else "ah_pat_"
-    plain = prefix + secrets.token_hex(12)
+    plain = _new_plain(body.type)
     expires = (datetime.now() + timedelta(days=body.days)).strftime("%Y-%m-%d")
     key = AppKey(id=uid("ak"), app=body.app, type=body.type,
                  prefix=plain[:14] + "…", digest=_digest(plain),
@@ -52,6 +70,43 @@ def update_key(key_id: str, payload: dict, db: Session = Depends(get_db)):
         key.status = payload["status"]
     db.commit()
     return key_out(key)
+
+
+@router.post("/keys/{key_id}/rotate")
+def rotate_key(key_id: str, payload: dict | None = None, db: Session = Depends(get_db)):
+    """轮换凭证：同一行换新摘要，旧明文立即失效，配额与统计保持不变。"""
+    key = db.get(AppKey, key_id)
+    if not key:
+        raise NotFound("凭证不存在")
+    plain = _new_plain(key.type)
+    key.digest = _digest(plain)
+    key.prefix = plain[:14] + "…"
+    key.status = "启用"
+    days = (payload or {}).get("days")
+    if days:
+        key.expires_at = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
+    db.commit()
+    data = key_out(key)
+    data["plain"] = plain  # 仅本次返回
+    return data
+
+
+@router.post("/keys/{key_id}/revoke")
+def revoke_key(key_id: str, db: Session = Depends(get_db)):
+    key = db.get(AppKey, key_id)
+    if not key:
+        raise NotFound("凭证不存在")
+    key.status = "停用"
+    db.commit()
+    return key_out(key)
+
+
+@router.get("/system/contract")
+def system_contract():
+    """接口契约：参数、请求/响应示例、curl 与是否可测试，直接来自 OpenAPI。"""
+    from ..docs_meta import build_contract
+
+    return build_contract()
 
 
 @router.get("/system/meta")

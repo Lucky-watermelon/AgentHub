@@ -20,12 +20,14 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from . import builtin_tools, llm
+from . import evidence as evidence_mod
+from . import llm, sandbox, tools_runtime
 from .config import settings
 from .dag import compile_graph, normalize, topo_order, validate
 from .db import SessionLocal
 from .errors import ApiError, DagInvalid, NotFound
-from .models import Agent, Checkpoint, Run, RunEvent, ToolCall
+from .gate import validate_dependencies
+from .models import Agent, Checkpoint, Run, RunEvent, Skill, Tool, ToolCall
 from .report import render_report, save_report
 
 logger = logging.getLogger("agenthub.runner")
@@ -196,6 +198,20 @@ def _prompt_for(node: dict, state: dict) -> str:
     )
 
 
+def _skill_prompt(skill: Skill, node: dict, state: dict, features: dict) -> str:
+    content = (skill.content or "").strip()
+    guide = content[:4000] if content else (
+        f"模板标识：{skill.prompt}\n技能说明：{skill.description or '—'}")
+    return (
+        f"你正在执行技能「{skill.name}」（v{skill.version}）。\n"
+        f"以下是该技能的说明书（SKILL.md）：\n{guide}\n\n"
+        f"客户编号：{state.get('customer_no')}\n"
+        f"请按说明书执行，并基于以下结构化特征输出不超过 120 字的综合判断，"
+        f"指出主要风险点与建议。\n"
+        f"特征：{json.dumps(features, ensure_ascii=False)}"
+    )
+
+
 def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False,
                      skip_ids: set[str] | None = None,
                      completed: set[str] | None = None):
@@ -233,27 +249,39 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                                             "dur_ms": int((time.perf_counter() - node_started) * 1000)})
             return finish({})
 
+        # 节点级 params 覆盖报文顶层字段：知识库检索的 q / HTTP 工具入参都靠它传入
+        tool_payload = dict(state.get("payload") or {})
+        if isinstance(node.get("params"), dict):
+            tool_payload.update(node["params"])
+
         if ntype == "tool":
             tool_name = node.get("tool") or name
             params = {"customer_no": state.get("customer_no")}
+            if isinstance(node.get("params"), dict):
+                params.update(node["params"])
             started = time.perf_counter()
             emit(db, run.id, "tool.call", {"tool": tool_name, "params": params})
             try:
-                out = builtin_tools.invoke(tool_name, state.get("payload") or {},
-                                           {"customer_no": state.get("customer_no", ""),
-                                            "features": state.get("features") or {},
-                                            "summary": state.get("summary", ""),
-                                            "db": db,
-                                            "model": node.get("model") or settings.default_model})
+                out = tools_runtime.invoke_by_name(db, tool_name, tool_payload,
+                                                   {"customer_no": state.get("customer_no", ""),
+                                                    "features": state.get("features") or {},
+                                                    "summary": state.get("summary", ""),
+                                                    "db": db,
+                                                    "evidence_items": stats.setdefault("evidence", []),
+                                                    "model": node.get("model") or settings.default_model})
                 dur = int((time.perf_counter() - started) * 1000)
                 record_tool_call(db, run, tool_name, params, "成功", dur)
                 emit(db, run.id, "tool.result", {"tool": tool_name, "status": "OK", "dur_ms": dur,
                                                  "keys": list(out.keys())})
+                stats.setdefault("evidence", []).extend(
+                    evidence_mod.from_tool(tool_name, nid, out, dur))
             except Exception as exc:
                 dur = int((time.perf_counter() - started) * 1000)
                 record_tool_call(db, run, tool_name, params, "失败", dur, str(exc))
                 emit(db, run.id, "tool.result", {"tool": tool_name, "status": "FAIL",
                                                  "dur_ms": dur, "error": str(exc)})
+                stats.setdefault("evidence", []).append(
+                    evidence_mod.from_error(tool_name, nid, str(exc)))
                 raise
             if "features" in out:
                 merged = dict(state.get("features") or {})
@@ -263,6 +291,141 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                                              "dur_ms": int((time.perf_counter() - node_started) * 1000)})
             return finish(out)
 
+        if ntype == "skill":
+            # 技能节点 = 只读工具 → 技能脚本（沙箱）→ 技能模型判读。
+            # 产出具（fs:write）与 LLM 类工具跳过，避免提前渲染报告或重复计费。
+            skill_name = node.get("skill") or name
+            skill = db.query(Skill).filter(Skill.name == skill_name).first()
+            if not skill:
+                raise ApiError(f"技能不存在：{skill_name}", code="AH-RUNTIME-422", status_code=422)
+            if skill.status != "published":
+                raise ApiError(f"技能未发布：{skill_name}（当前 {skill.status}）",
+                               code="AH-SKILL-409", status_code=409)
+            try:
+                skill_tools = json.loads(skill.tools_json or "[]")
+            except json.JSONDecodeError:
+                skill_tools = []
+            try:
+                skill_scripts = sandbox.normalize_scripts(json.loads(skill.scripts_json or "[]"))
+            except json.JSONDecodeError:
+                skill_scripts = []
+            features = dict(state.get("features") or {})
+            executed: list[str] = []
+            if node.get("run_tools", True):
+                for tool_name in skill_tools:
+                    tool = db.query(Tool).filter(Tool.name == tool_name).first()
+                    if not tool:
+                        raise ApiError(f"技能绑定的工具不存在：{tool_name}",
+                                       code="AH-TOOL-422", status_code=422)
+                    if tool.status != "启用":
+                        raise ApiError(f"技能绑定的工具已停用：{tool_name}",
+                                       code="AH-TOOL-409", status_code=409)
+                    if tool.permission == "fs:write" or (tool.impl or "").lower() == "llm":
+                        continue
+                    param_errors = tools_runtime.validate_params(tool.schema_json, tool_payload)
+                    if param_errors:
+                        emit(db, run.id, "node.notice",
+                             {"node": nid, "message": f"跳过技能工具 {tool_name}",
+                              "reason": "；".join(param_errors)})
+                        continue
+                    t_started = time.perf_counter()
+                    emit(db, run.id, "tool.call",
+                         {"tool": tool_name, "params": {"skill": skill_name}, "via": "skill"})
+                    try:
+                        out = tools_runtime.invoke_by_name(
+                            db, tool_name, tool_payload,
+                            {"customer_no": state.get("customer_no", ""), "features": features,
+                             "summary": state.get("summary", ""), "db": db,
+                             "evidence_items": stats.setdefault("evidence", []),
+                             "model": node.get("model") or skill.model})
+                    except Exception as exc:
+                        dur = int((time.perf_counter() - t_started) * 1000)
+                        record_tool_call(db, run, tool_name, {"skill": skill_name}, "失败", dur,
+                                         str(exc))
+                        emit(db, run.id, "tool.result",
+                             {"tool": tool_name, "status": "FAIL", "dur_ms": dur,
+                              "error": str(exc), "via": "skill"})
+                        stats.setdefault("evidence", []).append(
+                            evidence_mod.from_error(tool_name, nid, str(exc)))
+                        raise
+                    dur = int((time.perf_counter() - t_started) * 1000)
+                    record_tool_call(db, run, tool_name, {"skill": skill_name}, "成功", dur)
+                    emit(db, run.id, "tool.result", {"tool": tool_name, "status": "OK",
+                                                     "dur_ms": dur, "via": "skill"})
+                    stats.setdefault("evidence", []).extend(
+                        evidence_mod.from_tool(tool_name, nid, out, dur))
+                    features.update((out or {}).get("features") or {})
+                    executed.append(tool_name)
+
+            if node.get("run_script", True):
+                wanted = node.get("script") or skill.entrypoint
+                script = sandbox.pick_script(skill_scripts, skill.entrypoint,
+                                             node.get("script") or None)
+                if wanted and not any(s["name"] == wanted for s in skill_scripts):
+                    raise ApiError(f"入口脚本不存在：{wanted}", code="AH-SKILL-422",
+                                   status_code=422)
+                if script:
+                    started = time.perf_counter()
+                    label = f"技能脚本:{skill.name}"
+                    emit(db, run.id, "tool.call",
+                         {"tool": label, "params": {"script": script["name"]}, "via": "skill"})
+                    ctx_in = {"payload": tool_payload, "features": features,
+                              "customer_no": state.get("customer_no", ""),
+                              "params": node.get("params") or {}}
+                    limit = max(1, min(int(skill.timeout_s or 5), 20))
+                    result = sandbox.run_python(script["code"], ctx_in, limit)
+                    dur = int((time.perf_counter() - started) * 1000)
+                    ok = bool(result.get("ok"))
+                    record_tool_call(
+                        db, run, label, {"script": script["name"], "skill": skill_name},
+                        "成功" if ok else "失败", dur,
+                        "" if ok else (result.get("stderr")
+                                       or "；".join(result.get("errors") or [])))
+                    emit(db, run.id, "tool.result",
+                         {"tool": label, "status": "OK" if ok else "FAIL", "dur_ms": dur,
+                          "stdout": (result.get("stdout") or "")[:300], "via": "skill"})
+                    if not ok:
+                        reason = (result.get("stderr")
+                                  or "；".join(result.get("errors") or []) or "未知错误")
+                        stats.setdefault("evidence", []).append(
+                            evidence_mod.from_error(label, nid, reason))
+                        raise ApiError(f"技能脚本执行失败：{reason[:300]}",
+                                       code="AH-SKILL-500", status_code=500)
+                    stats.setdefault("evidence", []).append(
+                        evidence_mod.from_script(skill.name, script["name"], result, nid, dur))
+                    parsed = result.get("result")
+                    if isinstance(parsed, dict):
+                        if isinstance(parsed.get("features"), dict):
+                            features.update(parsed["features"])
+                        elif "result" in parsed:
+                            features["script_result"] = parsed["result"]
+                        else:
+                            features.update(parsed)
+                    elif parsed is not None:
+                        features["script_result"] = parsed
+                    elif result.get("stdout"):
+                        features["script_output"] = result["stdout"][:2000]
+
+            alias = node.get("model") or skill.model
+            prompt = _skill_prompt(skill, node, state, features)
+            started = time.perf_counter()
+            res = llm.complete(db, prompt, alias,
+                               {"features": features, "customer_no": state.get("customer_no")})
+            stats["tokens"] += int(res.get("tokens") or 0)
+            stats.setdefault("evidence", []).append(
+                evidence_mod.from_model(alias, res, nid))
+            dur = int((time.perf_counter() - started) * 1000)
+            emit(db, run.id, "message.delta",
+                 {"delta": res["text"][:160], "model": res.get("model"), "alias": res.get("alias"),
+                  "skill": skill.name, "skill_version": skill.version, "dur_ms": dur,
+                  "degraded": res.get("degraded", False)})
+            emit(db, run.id, "node.result",
+                 {"node": nid, "skill": skill.name, "skill_version": skill.version,
+                  "tools": executed, "dur_ms": int((time.perf_counter() - node_started) * 1000)})
+            return finish({"features": features,
+                           "messages": (state.get("messages") or []) + [res["text"]],
+                           "summary": res["text"]})
+
         if ntype == "llm":
             alias = node.get("model") or settings.default_model
             prompt = _prompt_for(node, state)
@@ -271,6 +434,8 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
                                {"features": state.get("features") or {},
                                 "customer_no": state.get("customer_no")})
             stats["tokens"] += int(res.get("tokens") or 0)
+            stats.setdefault("evidence", []).append(
+                evidence_mod.from_model(alias, res, nid))
             dur = int((time.perf_counter() - started) * 1000)
             emit(db, run.id, "message.delta", {"delta": res["text"][:160], "model": res.get("model"),
                                                "alias": res.get("alias"), "dur_ms": dur,
@@ -284,7 +449,10 @@ def make_node_runner(db: Session, run: Run, stats: dict, skip_hitl: bool = False
             if level == "高" and not skip_hitl:
                 # 图执行时 graph.invoke 不回写入参，中断快照必须取自节点收到的状态
                 stats["last_state"] = state
-                raise HitlInterrupt(name, f"客户命中司法高风险（{level}），需人工复核后继续")
+                detail = f"客户命中司法高风险（{level}），需人工复核后继续"
+                stats.setdefault("evidence", []).append(
+                    evidence_mod.from_hitl(name, detail, nid))
+                raise HitlInterrupt(name, detail)
             emit(db, run.id, "node.result", {"node": nid, "decision": "SKIP",
                                             "reason": f"风险等级 {level}",
                                             "dur_ms": int((time.perf_counter() - node_started) * 1000)})
@@ -346,7 +514,10 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
                 progress = {}
             completed = set(progress.get("completed") or [])
             if isinstance(saved, dict) and saved:
+                saved_items = saved.pop("_evidence_items", [])
                 state.update(saved)
+                if isinstance(saved_items, list):
+                    stats["evidence"] = saved_items
             state["payload"] = payload or state.get("payload") or {}
             state["customer_no"] = run.customer_no or state.get("customer_no") or ""
 
@@ -365,6 +536,9 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
         dag, errors, warnings = validate(dag_raw)
         if errors:
             raise DagInvalid(errors)
+        dep_errors, _ = validate_dependencies(db, dag)
+        if dep_errors:  # 发布后资产被停用 / 删除时，运行前再拦一次
+            raise DagInvalid(dep_errors)
 
         skip_ids = set(completed)
         if skip_hitl:  # 审批已通过：审批节点本身不再执行
@@ -384,14 +558,18 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
 
         features = result.get("features") or {}
         summary = result.get("summary") or ""
+        evidence = evidence_mod.build_evidence(
+            features, summary, stats.get("evidence") or [])
         html = result.get("report_html") or render_report(
-            customer_no=run.customer_no, payload=payload, features=features, summary=summary)
+            customer_no=run.customer_no, payload=payload, features=features,
+            summary=summary, evidence=evidence)
         report_path = save_report(html, run.customer_no, run.id)
 
         run.status = "COMPLETED"
         run.features_json = json.dumps(features, ensure_ascii=False, default=str)
         run.output_json = json.dumps({"summary": summary, "report_path": report_path,
-                                      "findings": features}, ensure_ascii=False, default=str)
+                                      "findings": features, "evidence": evidence},
+                                     ensure_ascii=False, default=str)
         run.report_path = report_path
         run.tokens = stats["tokens"]
         run.amount = round(stats["tokens"] * 0.000012, 6)
@@ -412,7 +590,8 @@ def execute_run(run_id: str, skip_hitl: bool = False, resume: bool = False) -> N
                                            ensure_ascii=False)
             # 保存断点：state 快照 + 已完成节点，审批后从这里继续。
             # 图执行下入参不会被回写，优先取节点内记录的状态。
-            snapshot = stats.get("last_state") or state
+            snapshot = dict(stats.get("last_state") or state)
+            snapshot["_evidence_items"] = stats.get("evidence") or []
             run.state_json = json.dumps(snapshot, ensure_ascii=False, default=str)[:200000]
             run.node_progress = json.dumps({"completed": sorted(completed),
                                             "interrupted_at": stats.get("current_node", "")},
@@ -478,6 +657,9 @@ def create_run(db: Session, agent: Agent, payload: dict, customer_no: str,
     dag, errors, _ = validate(json.loads(agent.dag_json or "{}"))
     if errors:
         raise DagInvalid(errors)
+    dep_errors, _ = validate_dependencies(db, dag)
+    if dep_errors:
+        raise DagInvalid(dep_errors)
 
     key = (idempotency_key or "").strip()
     if key:
