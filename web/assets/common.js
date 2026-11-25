@@ -66,10 +66,11 @@ function sel(name, opts, value) {
 function sel2(name, opts, value, extra) { return sel(name, opts, value).replace("<select ", "<select " + extra + " "); }
 function statusPill(s) {
   const raw = String(s || "");
-  const map = { published: "已发布", draft: "草稿", archived: "已归档", 启用: "启用", 停用: "停用", 成功: "成功", 失败: "失败" };
+  const map = { published: "已发布", draft: "草稿", archived: "已归档", 启用: "启用", 停用: "停用", 成功: "成功", 失败: "失败",
+    healthy: "健康", 异常: "异常", 已索引: "已索引", REJECTED: "已拒绝", INTERRUPTED: "已中断" };
   const label = map[raw] || raw || "—";
-  const tone = /COMPLETED|published|启用|成功|健康|PASS|默认/.test(raw) ? "ok"
-    : /WAITING|draft|草稿|PENDING|灰度|观察|解析中/.test(raw) ? "warn"
+  const tone = /COMPLETED|published|启用|成功|健康|healthy|PASS|默认|已索引/.test(raw) ? "ok"
+    : /WAITING|draft|草稿|PENDING|灰度|观察|解析中|INTERRUPTED/.test(raw) ? "warn"
     : /FAILED|REJECTED|停用|失败|BLOCK|异常/.test(raw) ? "err" : "mute";
   return pill(label, tone);
 }
@@ -92,6 +93,10 @@ function modalForm(title, action, body, submitLabel = "确定") {
   const fid = "f_" + Math.random().toString(16).slice(2, 8);
   modal(title, '<form id="' + fid + '" data-form="' + action + '">' + body + "</form>",
     btn("取消", "modal.close", {}, "") + '<button type="submit" form="' + fid + '" class="btn primary">' + esc(submitLabel) + "</button>");
+}
+function confirmBox(title, text, act, data = {}, label = "确认", cls = "danger") {
+  modal(title, note(esc(text), "warn"),
+    btn("取消", "modal.close", {}, "") + btn(label, act, data, cls));
 }
 function toast(title, msg = "", tone = "ok") {
   const el = document.createElement("div");

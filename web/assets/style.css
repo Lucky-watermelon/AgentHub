@@ -6,9 +6,6 @@ a{color:inherit;text-decoration:none}button,input,select,textarea{font:inherit;c
 .brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
 .logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#2f6bff,#1a43b8);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
 .brand-t{font-size:15px;font-weight:700}.brand-s{font-size:11px;color:var(--muted)}
-.ctx{margin:2px 12px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
-.ctx-l{font-size:10px;color:var(--muted);letter-spacing:.4px;text-transform:uppercase}
-.ctx-v{font-size:12px;font-weight:600;margin-top:2px}.ctx-s{font-size:11px;color:var(--muted);margin-top:2px}
 .navgroup{padding:12px 12px 4px;font-size:10px;color:#98a3b5;letter-spacing:1px;font-weight:700}
 .navitem{display:flex;align-items:center;gap:9px;margin:2px 8px;padding:8px 10px;border-radius:8px;color:#46536b;font-size:12.5px;cursor:pointer}
 .navitem:hover{background:#f0f3f9}.navitem.on{background:var(--soft);color:var(--primary);font-weight:600}
@@ -92,7 +89,7 @@ table.tbl .ops{display:flex;gap:6px;flex-wrap:wrap}
 .gnode .gm{font-size:10px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gnode.start,.gnode.end{border-radius:22px;text-align:center;width:104px}
 .gnode.start{border-color:#bfe6d3;background:#f7fdfa}.gnode.end{background:#f8fafc}
-.gnode.llm{border-color:#c9d9ff;background:#fbfcff}.gnode.condition{border-color:#f0d6a0;background:#fffcf5}.gnode.hitl{border-color:#f3c3c5;background:#fff8f8}
+.gnode.llm{border-color:#c9d9ff;background:#fbfcff}.gnode.skill{border-color:#d6c6f5;background:#fbf8ff}.gnode.condition{border-color:#f0d6a0;background:#fffcf5}.gnode.hitl{border-color:#f3c3c5;background:#fff8f8}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
 @media(max-width:1100px){.col-3,.col-4,.col-5{grid-column:span 6}.col-7,.col-8{grid-column:span 12}}
 @media(max-width:820px){.sidebar{display:none}.col-3,.col-4,.col-5,.col-6{grid-column:span 12}}

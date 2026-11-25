@@ -14,17 +14,22 @@ const NAV = [
   { id: "tools", name: "工具", ico: "TL", group: "能力资产", tabs: [["list", "工具清单"], ["calls", "调用记录"]] },
   { id: "kb", name: "知识库", ico: "KB", group: "能力资产", tabs: [["docs", "文档与切片"], ["test", "检索测试"]] },
   { id: "models", name: "模型接入", ico: "MD", group: "能力资产", tabs: [["list", "Provider 与别名"], ["routing", "降级链"]] },
-  { id: "observe", name: "运行监控", ico: "OB", group: "运行与接入", tabs: [
-    ["traces", "Trace"], ["stats", "统计"], ["langfuse", "Langfuse"]] },
-  { id: "access", name: "接入与凭证", ico: "AP", group: "运行与接入", tabs: [
-    ["keys", "AppKey"], ["invoke", "对外调用"], ["contract", "接口契约"]] },
+  { id: "observe", name: "运行观测", ico: "OB", group: "运行观测", tabs: [
+    ["overview", "总览"], ["traces", "调用链路"], ["stats", "运行统计"],
+    ["incidents", "异常与审批"], ["cost", "成本与用量"]] },
+  { id: "access", name: "对外接入", ico: "AP", group: "对外接入", tabs: [
+    ["overview", "总览"], ["keys", "调用凭证"], ["contract", "接口文档"]] },
 ];
 
 /* ===== 运行时状态 ===== */
 const state = {
   agentId: null, runId: null, traceId: null,
   dagText: null, dagStructure: null, dagErrors: null, dagWarnings: null, dagSel: null, dagAgent: null,
-  payloadText: null, kbResult: null, kbQuery: "", chainDraft: null, searchText: "",
+  payloadText: null, kbResult: null, kbQuery: "", kbKind: "全部", kbMode: "hybrid",
+  chainDraft: null, searchText: "",
+  toolCallTool: "", toolCallStatus: "全部",
+  traceStatus: "全部", statsDays: 0,
+  contractDetail: null, contractQuery: "", contractTag: "全部", contractMethod: "全部",
 };
 window.state = state;
 
@@ -48,8 +53,6 @@ window.go = go;
 function sidebarHTML(activeId) {
   let h = '<div class="brand"><div class="logo">AH</div><div><div class="brand-t">AgentHub</div>' +
     '<div class="brand-s">智能体运行支撑平台</div></div></div>';
-  h += '<div class="ctx"><div class="ctx-l">当前项目</div><div class="ctx-v">客户全景分析</div>' +
-    '<div class="ctx-s">本地单机 · 真实后端</div></div>';
   let last = "";
   NAV.forEach(n => {
     if (n.group !== last) { h += '<div class="navgroup">' + esc(n.group) + "</div>"; last = n.group; }
@@ -67,7 +70,6 @@ function topbarHTML(nav, sub) {
     '<div class="topright">' +
     '<button class="btn sm" data-act="key.setting">设置 Key</button>' +
     '<a class="btn sm" href="/docs" target="_blank">API 文档</a>' +
-    '<a class="btn sm" href="/reports/" target="_blank">报告目录</a>' +
     '<span class="tag ok">后端在线</span></div>';
 }
 

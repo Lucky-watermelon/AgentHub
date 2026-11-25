@@ -1,0 +1,23 @@
+/* 收紧 Swagger UI 顶部留白（默认 .info 上下各 50px） */
+.swagger-ui .info {
+  margin: 8px 0 !important;
+}
+.swagger-ui .info .title {
+  margin-bottom: 4px !important;
+}
+.swagger-ui .info .description {
+  margin: 4px 0 0 !important;
+  line-height: 1.7;
+}
+.swagger-ui .scheme-container {
+  margin: 0 0 10px !important;
+  padding: 10px 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.swagger-ui .scheme-container .schemes {
+  align-items: center;
+}
+.swagger-ui .wrapper {
+  padding: 0 20px;
+}
